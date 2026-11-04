@@ -673,6 +673,10 @@ func main() {
 	flag.StringVar(&keyFile, "admin-key-file", "", "im-server 的 IM_ADMIN_KEY 所在文件")
 	flag.StringVar(&steps, "steps", "nodes,overview,alerts,backups,grafana,configdb,troubleshoot,paused,version", "要跑的步骤")
 	flag.IntVar(&samples, "samples", 300, "AC-OPS-90-3 的排查次数")
+	var phaseFile string
+	var accounts int
+	flag.StringVar(&phaseFile, "phase-file", "", "load 步骤：im-loadtest 的 -ops-phase-file")
+	flag.IntVar(&accounts, "accounts", 20, "load 步骤的测试账号数")
 	flag.Parse()
 	key, err := os.ReadFile(keyFile) // #nosec G304 -- 路径来自命令行参数，只在测试环境运行
 	if err != nil || tt == "" || code == "" {
@@ -707,6 +711,9 @@ func main() {
 
 	want := strings.Split(steps, ",")
 	on := func(s string) bool { return slices.Contains(want, s) }
+	if on("load") {
+		stepLoad(super, phaseFile, accounts)
+	}
 	if on("nodes") {
 		stepNodes(eng)
 	}
