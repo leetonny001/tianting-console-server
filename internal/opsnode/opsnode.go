@@ -31,12 +31,15 @@ const (
 	nodeTimeout   = 1500 * time.Millisecond
 	maxConcurrent = 8 // 每个实例
 	maxPerNode    = 2
+	// 名额满时短暂排队：一次排查要连打两个接口，几个工程师同时查就会碰上，这不是节点没响应。
+	// 500ms 排队 + 1.5 秒超时，节点卡住时仍在 AC-OPS-08-11 的 2.5 秒之内。
+	queueWait = 500 * time.Millisecond
 )
 
 // ErrIdentity 表示 TLS 身份校验失败："未通过身份校验"，没有发出任何请求。
 var ErrIdentity = errors.New("node failed TLS identity check")
 
-// ErrBusy 表示本实例对这个节点的并发已满。
+// ErrBusy 表示本实例对这个节点的并发已满，排队也没等到。
 var ErrBusy = errors.New("too many concurrent requests to this node")
 
 // Entry 是节点凭证表的一行。Key 从文件读取，打印不出来。
@@ -171,11 +174,15 @@ func New(entries []Entry, caFile string, clk clock.Clock) (*Fleet, error) {
 
 // Call 调用一个节点。身份校验失败返回 ErrIdentity。
 func (n *Node) Call(ctx context.Context, call imclient.Call, method, path string, body, out any) error {
+	wait := time.NewTimer(queueWait)
+	defer wait.Stop()
 	select {
 	case n.sem <- struct{}{}:
 		defer func() { <-n.sem }()
-	default:
+	case <-wait.C:
 		return ErrBusy
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	err := n.cl.Do(ctx, call, method, path, nil, body, out)
 	if isIdentityError(err) {
