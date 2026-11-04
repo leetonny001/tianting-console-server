@@ -12,6 +12,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,6 +31,35 @@ const (
 	grafanaEnterPath   = "/__tianting/enter"
 	grafanaUserHeader  = "X-WEBAUTH-USER"
 )
+
+// grafanaQueriesPerMinute：每个账号经代理发到 Prometheus 的查询上限。
+// 14 个面板 30 秒刷新一次是每分钟 28 次，同时开几个标签页也够用。
+const grafanaQueriesPerMinute = 120
+
+// queryLimiter 是按账号的每分钟计数。查询贵，不能让一个只读账号拖慢 Prometheus 进而拖慢告警。
+// 放内存里：每个实例各算各的，多实例时上限相应放宽，这里只防滥用，不需要精确。
+type queryLimiter struct {
+	mu     sync.Mutex
+	minute int64
+	counts map[string]int
+}
+
+func (l *queryLimiter) allow(user string, now int64) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if m := now / 60_000; m != l.minute || l.counts == nil {
+		l.minute, l.counts = m, map[string]int{}
+	}
+	l.counts[user]++
+	return l.counts[user] <= grafanaQueriesPerMinute
+}
+
+var grafanaQueries queryLimiter
+
+func isGrafanaQuery(r *http.Request) bool {
+	p := strings.ToLower(r.URL.Path)
+	return p == "/api/ds/query" || strings.HasPrefix(p, "/api/datasources/proxy/")
+}
 
 func randomToken() (string, error) {
 	raw := make([]byte, 32)
@@ -189,6 +219,10 @@ func (a *App) grafanaHandler() http.Handler {
 		}
 		if !grafanaAllowed(r) {
 			apierr.Write(w, apierr.New(apierr.Forbidden, "read-only"))
+			return
+		}
+		if isGrafanaQuery(r) && !grafanaQueries.allow(username, a.Clock.Now().UnixMilli()) {
+			apierr.Write(w, apierr.New(apierr.RateLimited, "too many requests, try again later"))
 			return
 		}
 		r.Header.Set(grafanaInternalUser, grafanaIdentity(username))
