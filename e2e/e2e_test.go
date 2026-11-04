@@ -500,6 +500,18 @@ func TestDataKeyRotation(t *testing.T) {
 // CS-004：对真实 im-server 的签名调用。需要同级目录有 tianting-server（CI 上是私有仓库，没有部署密钥时跳过）。
 // startRealIM 编译并启动真实的 im-server，返回管理地址和调用方私钥。没有 tianting-server 源码时跳过。
 func startRealIM(t *testing.T) (string, ed25519.PrivateKey) {
+	admin, _, priv := startRealIMWS(t)
+	return admin, priv
+}
+
+var allConsoleScopes = []string{"user.read", "user.write", "user.kick", "user.sessions", "token.issue", "group.read", "group.write", "group.dissolve", "msg.meta", "audit.read", "social.settings", "social.friends"}
+
+// startRealIMWS 同时返回客户端（WebSocket）地址。
+func startRealIMWS(t *testing.T) (adminAddress, wsAddress string, key ed25519.PrivateKey) {
+	return startRealIMScopes(t, allConsoleScopes)
+}
+
+func startRealIMScopes(t *testing.T, scopes []string) (adminAddress, wsAddress string, key ed25519.PrivateKey) {
 	t.Helper()
 	src := os.Getenv("TIANTING_SERVER_DIR")
 	if src == "" {
@@ -518,7 +530,7 @@ func startRealIM(t *testing.T) (string, ed25519.PrivateKey) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	callers, _ := json.Marshal([]map[string]any{{
 		"id": "console", "alg": "ed25519", "publicKey": base64.StdEncoding.EncodeToString(pub),
-		"scopes": []string{"user.read", "user.write", "audit.read"},
+		"scopes": scopes,
 	}})
 	callersFile := filepath.Join(dir, "callers.json")
 	if err := os.WriteFile(callersFile, callers, 0o600); err != nil {
@@ -546,11 +558,11 @@ func startRealIM(t *testing.T) (string, ed25519.PrivateKey) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return adminAddr, priv
+	return adminAddr, addr, priv
 }
 
 func TestSignedCallToRealIMServer(t *testing.T) {
-	adminAddr, priv := startRealIM(t)
+	adminAddr, _, priv := startRealIMScopes(t, []string{"user.read", "user.write", "audit.read"})
 	cl, err := imclient.New(imclient.Config{BaseURL: "http://" + adminAddr, Caller: "console", Key: priv})
 	if err != nil {
 		t.Fatal(err)

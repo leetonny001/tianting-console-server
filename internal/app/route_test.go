@@ -35,8 +35,12 @@ func TestRouteTable(t *testing.T) {
 					t.Errorf("%s %s: no step-up", rt.method, rt.path)
 				}
 			}
-			if rt.method == "DELETE" {
+			if rt.method == "DELETE" && strings.HasPrefix(rt.path, "/console/api/accounts") {
 				t.Errorf("accounts cannot be deleted: %s", rt.path)
+			}
+			// 带理由的敏感查询不能用 GET（CS-020 内容 3）。
+			if rt.sensitive && rt.method == "GET" {
+				t.Errorf("sensitive query uses GET: %s", rt.path)
 			}
 		}
 	}
@@ -48,4 +52,13 @@ func TestValidReason(t *testing.T) {
 			t.Errorf("validReason(%q) != %v", s, want)
 		}
 	}
+}
+
+func TestSensitiveGetPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("a sensitive GET route must not start")
+		}
+	}()
+	checkRoute(route{method: "GET", path: "/x", perm: "user.read", sensitive: true})
 }

@@ -167,5 +167,21 @@ func (a *App) Housekeeping(ctx context.Context) error {
 			return err
 		}
 	}
+	for _, q := range []struct {
+		sql string
+		arg int64
+	}{
+		{`DELETE FROM biz.minute_rate WHERE minute < $1`, now/60_000 - 2},
+		{`DELETE FROM biz.import_jobs WHERE expires_at < $1`, now - 24*time.Hour.Milliseconds()},
+		{`DELETE FROM biz.meta_sessions WHERE until < $1`, now},
+	} {
+		if _, err := a.DB.Exec(ctx, q.sql, q.arg); err != nil {
+			return err
+		}
+	}
+	day := a.Clock.Now().In(shanghai).AddDate(0, 0, -2).Format("2006-01-02")
+	if _, err := a.DB.Exec(ctx, `DELETE FROM biz.daily_quota WHERE day < $1`, day); err != nil {
+		return err
+	}
 	return a.FlushDenied(ctx)
 }

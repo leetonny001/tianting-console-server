@@ -131,22 +131,44 @@ func (a *App) reconcileOne(ctx context.Context, in audit.Stored, now time.Time) 
 	}
 	from := in.TS - time.Minute.Milliseconds()
 	to := min(now.Add(time.Minute).UnixMilli(), from+reconcileWindow.Milliseconds())
-	entries, err := a.imAudit(ctx, "system:reconcile", in.RequestID, from, to)
-	if err != nil {
-		return "", 0, nil, err
+	// 拆批的操作：im-server 那边每批一个 requestId（{requestId}.{批号}），批数在 intent 的 params.batches。
+	var p struct {
+		Batches int `json:"batches"`
 	}
-	if len(entries) == 0 {
+	_ = json.Unmarshal([]byte(in.Params), &p)
+	ids := []string{in.RequestID}
+	if p.Batches > 0 {
+		ids = ids[:0]
+		for i := 1; i <= p.Batches; i++ {
+			ids = append(ids, batchRequestID(in.RequestID, i))
+		}
+	}
+	seen, succeeded := 0, 0
+	for _, id := range ids {
+		entries, err := a.imAudit(ctx, "system:reconcile", id, from, to)
+		if err != nil {
+			return "", 0, nil, err
+		}
+		if len(entries) > 0 {
+			seen++
+		}
+		for _, e := range entries {
+			if e.Phase != "result" {
+				continue
+			}
+			if e.Code != 0 {
+				return audit.Failure, e.Code, true, nil
+			}
+			succeeded++
+		}
+	}
+	switch {
+	case seen == 0:
 		return audit.Failure, 0, "notExecuted", nil // console 在调用前就失败了
+	case succeeded == len(ids):
+		return audit.Success, 0, true, nil
+	case succeeded > 0:
+		return audit.Unknown, 0, "partial", nil // 拆批中途停了，没有失败记录：只能确定做了一部分
 	}
-	result, marker = audit.Unknown, "imIntentOnly" // im-server 写了 intent 就崩溃：只能确定它开始过
-	for _, e := range entries {
-		if e.Phase != "result" {
-			continue
-		}
-		if e.Code != 0 {
-			return audit.Failure, e.Code, true, nil
-		}
-		result, marker = audit.Success, true
-	}
-	return result, 0, marker, nil
+	return audit.Unknown, 0, "imIntentOnly", nil // im-server 写了 intent 就崩溃：只能确定它开始过
 }

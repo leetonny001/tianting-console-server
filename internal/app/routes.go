@@ -26,6 +26,7 @@ type route struct {
 	public       bool // 不需要会话：登录、激活
 	allowSetup   bool // setup 会话也能调用
 	stepUp       bool // 需要 5 分钟内 step-up
+	sensitive    bool // 带理由的敏感查询：必须 POST（CS-020 内容 3），userId 和理由不进 URL
 	action       string
 	h            func(*rc)
 }
@@ -41,10 +42,13 @@ type rc struct {
 	route     route
 	ip, ua    string
 	requestID string
-	sid       string
-	sess      sessionRow
-	acct      accountRow
-	roles     []string
+	ticket    string // 工单号：audited 写进 intent 和 result
+	// resultParams 是 result 记录的 params（条数、成功批数）。fn 里设置。
+	resultParams map[string]any
+	sid          string
+	sess         sessionRow
+	acct         accountRow
+	roles        []string
 }
 
 func (c *rc) now() int64 { return c.a.Clock.Now().UnixMilli() }
@@ -76,8 +80,10 @@ func (c *rc) failErr(where string, err error) {
 }
 
 // readJSON 读请求体。解析失败直接回 400，不带内容（可能有密码）。
-func (c *rc) readJSON(v any) bool {
-	if err := json.NewDecoder(http.MaxBytesReader(c.w, c.r.Body, 1<<16)).Decode(v); err != nil {
+func (c *rc) readJSON(v any) bool { return c.readJSONLimit(v, 1<<16) }
+
+func (c *rc) readJSONLimit(v any, limit int64) bool {
+	if err := json.NewDecoder(http.MaxBytesReader(c.w, c.r.Body, limit)).Decode(v); err != nil {
 		c.fail(apierr.New(apierr.BadRequest, "invalid JSON body"))
 		return false
 	}
@@ -113,6 +119,9 @@ func (a *App) apiRoutes(ps perm.Space) []route {
 		route{method: "GET", path: auditRequestPath, perm: ps.AuditPerm, action: actionAuditQuery, h: (*rc).auditRequest},
 		route{method: "GET", path: auditIMPath, perm: ps.AuditPerm, action: actionAuditQuery, h: (*rc).auditIM},
 	)
+	if ps.Name == "admin" {
+		rs = append(rs, businessRoutes()...)
+	}
 	if ps.Emergency != "" { // 运维空间没有应急授权（PRD-ops AC-OPS-02-9）
 		rs = append(rs, route{method: "POST", path: "/console/api/me/emergency-grants", perm: ps.Emergency, stepUp: true, action: "account.emergency_grant", h: (*rc).emergencyGrant})
 	} else {
@@ -125,6 +134,9 @@ func (a *App) apiRoutes(ps perm.Space) []route {
 func checkRoute(rt route) {
 	if !rt.public && rt.perm == "" {
 		panic("route without permission: " + rt.method + " " + rt.path)
+	}
+	if rt.sensitive && rt.method == "GET" {
+		panic("sensitive query must not use GET: " + rt.path)
 	}
 }
 
@@ -258,7 +270,7 @@ func (c *rc) event(action string, target audit.Target, params map[string]any, re
 // result 写失败时操作已经生效，照常返回真实结果，由对账任务补齐。im-server 超时 → 504 / 5040，result 记 unknown。
 func (c *rc) audited(action string, target audit.Target, params map[string]any, reason string, fn func() (any, error)) {
 	r := c.base(audit.PhaseIntent, action)
-	r.Target, r.Params, r.Reason = target, params, reason
+	r.Target, r.Params, r.Reason, r.Ticket = target, params, reason, c.ticket
 	if err := c.a.Audit.Write(c.ctx, r); err != nil {
 		c.a.Log.Error("audit intent write failed; request rejected", "action", action, "requestId", c.requestID, "err", err)
 		c.fail(apierr.New(apierr.AuditUnavailable, "audit service unavailable, the operation was not performed"))
@@ -266,7 +278,11 @@ func (c *rc) audited(action string, target audit.Target, params map[string]any, 
 	}
 	resp, err := fn()
 	res := c.base(audit.PhaseResult, action)
-	res.Target, res.Reason = target, reason
+	res.Target, res.Reason, res.Ticket, res.Params = target, reason, c.ticket, c.resultParams
+	var partial *partialError
+	if errors.As(err, &partial) {
+		resp = partial.Resp
+	}
 	var e *apierr.Error
 	switch {
 	case err == nil:
@@ -286,7 +302,7 @@ func (c *rc) audited(action string, target audit.Target, params map[string]any, 
 		c.a.resultFailures.Inc()
 		c.a.Log.Error("audit result write failed", "action", action, "requestId", c.requestID, "err", werr)
 	}
-	if err != nil {
+	if err != nil && partial == nil {
 		c.failErr(action, err)
 		return
 	}

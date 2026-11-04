@@ -133,7 +133,8 @@ func (cl *Client) Do(ctx context.Context, call Call, method, path string, query 
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return ErrResultUnknown
 		}
-		return fmt.Errorf("call im-server: %w", err)
+		// 连接中断时请求可能已经到了 im-server：一律算"结果未知"，由对账确认。
+		return fmt.Errorf("%w: %v", ErrResultUnknown, errors.Unwrap(err))
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
@@ -147,6 +148,9 @@ func (cl *Client) Do(ctx context.Context, call Call, method, path string, query 
 		var e apierr.Error
 		if json.Unmarshal(data, &e) == nil && e.Code != 0 {
 			return &e
+		}
+		if resp.StatusCode == http.StatusNotFound { // 路由没有注册（AC-ADM-15-7）
+			return apierr.New(apierr.NotFound, "not found")
 		}
 		return apierr.New(apierr.Internal, "im-server returned HTTP %d", resp.StatusCode)
 	}
