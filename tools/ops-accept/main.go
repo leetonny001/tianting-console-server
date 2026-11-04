@@ -477,6 +477,58 @@ func grafana(method, path, cookie string, body []byte) (*http.Response, []byte, 
 	return resp, raw, nil
 }
 
+// 审计 M1：叫 admin 的运维账号在真实 Grafana 上不能是服务器管理员。
+func stepGrafanaAdminName(super *user) {
+	section("Grafana：叫 admin 的运维账号不是 Grafana 管理员")
+	if r := super.do("POST", "/console/api/auth/step-up", map[string]any{"otp": super.otp()}); r.status != 200 {
+		fail("step-up: %d %s", r.status, r.raw)
+		return
+	}
+	a, err := super.create("admin", "ops_viewer")
+	if err != nil {
+		fail("%v", err)
+		return
+	}
+	link, _ := a.do("POST", opsAPI+"/grafana/ticket", map[string]any{}).data()["url"].(string)
+	i := strings.Index(link, "/__tianting")
+	if i < 0 {
+		fail("no ticket")
+		return
+	}
+	resp, _, err := grafana(http.MethodGet, link[i:], "", nil)
+	if err != nil {
+		fail("enter: %v", err)
+		return
+	}
+	var cookie string
+	for _, c := range resp.Cookies() {
+		if c.Name == "__Host-grafana_sid" {
+			cookie = c.Value
+		}
+	}
+	resp, raw, err := grafana(http.MethodGet, "/api/user", cookie, nil)
+	if err != nil {
+		fail("user: %v", err)
+		return
+	}
+	var me struct {
+		Login   string `json:"login"`
+		IsAdmin bool   `json:"isGrafanaAdmin"`
+	}
+	_ = json.Unmarshal(raw, &me)
+	check(resp.StatusCode == 200 && !me.IsAdmin && me.Login == "ops-admin", fmt.Sprintf("身份 %s，isGrafanaAdmin=%v", me.Login, me.IsAdmin), resp.StatusCode)
+	for _, p := range []string{"/metrics", "/api/admin/settings", "/api/datasources/proxy/uid/prometheus/api/v1/status/config"} {
+		resp, _, err := grafana(http.MethodGet, p, cookie, nil)
+		if err == nil {
+			check(resp.StatusCode == 403, p+" 被拒", resp.StatusCode)
+		}
+	}
+	resp, raw, err = grafana(http.MethodGet, "/api/datasources/proxy/uid/prometheus/api/v1/query?query=up", cookie, nil)
+	if err == nil {
+		check(resp.StatusCode == 200 && bytes.Contains(raw, []byte(`"status":"success"`)), "查询接口仍能用", resp.StatusCode)
+	}
+}
+
 func stepGrafana(u *user) {
 	section("Grafana：票据进入，经认证代理读真实 Grafana，写接口被拦")
 	link, _ := u.do("POST", opsAPI+"/grafana/ticket", map[string]any{}).data()["url"].(string)
@@ -727,6 +779,7 @@ func main() {
 		stepBackups(eng)
 	}
 	if on("grafana") {
+		stepGrafanaAdminName(super)
 		stepGrafana(eng)
 	}
 	if on("configdb") {

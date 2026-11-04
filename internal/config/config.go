@@ -197,6 +197,11 @@ func Load(getenv func(string) string) (cfg Config, problems []string) {
 	}
 
 	cfg.TrustedProxies = parseCIDRs(getenv("CON_TRUSTED_PROXIES"), "CON_TRUSTED_PROXIES", bad)
+	for _, p := range cfg.TrustedProxies {
+		if cfg.Production() && p.Bits() == 0 {
+			bad("CON_TRUSTED_PROXIES must not contain %s in production: every client could forge X-Forwarded-For", p)
+		}
+	}
 	cfg.TLSCert, cfg.TLSKey = getenv("CON_TLS_CERT"), getenv("CON_TLS_KEY")
 	if (cfg.TLSCert == "") != (cfg.TLSKey == "") {
 		bad("CON_TLS_CERT and CON_TLS_KEY must be set together")

@@ -78,6 +78,7 @@ func LoadTable(path string, production bool) ([]Entry, []string) {
 	var problems []string
 	bad := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
 	seen := map[string]bool{}
+	keys := map[string]string{}
 	for i := range list {
 		e := &list[i]
 		name := e.NodeID
@@ -101,6 +102,10 @@ func LoadTable(path string, production bool) ([]Entry, []string) {
 			continue
 		}
 		e.Key = key
+		if owner, dup := keys[string(key)]; dup && production {
+			bad("node %s uses the same key as node %s: each node needs its own", name, owner)
+		}
+		keys[string(key)] = name
 	}
 	return list, problems
 }
@@ -108,6 +113,13 @@ func LoadTable(path string, production bool) ([]Entry, []string) {
 func readKey(path string) (secret.Bytes, error) {
 	if path == "" {
 		return nil, errors.New("keyFile is not set")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, errors.New("cannot read keyFile")
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return nil, errors.New("keyFile must not be readable by group or others (0600)")
 	}
 	raw, err := os.ReadFile(path) // #nosec G304 -- 路径来自运维配置
 	if err != nil {

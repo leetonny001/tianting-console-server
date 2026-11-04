@@ -539,6 +539,10 @@ func (c *rc) changePassword() {
 			if _, err := tx.Exec(c.ctx, `UPDATE auth.accounts SET password_hash = $2, password_history = $3 WHERE id = $1::uuid`, c.acct.ID, hash, pushHistory(c.acct.PasswordHistory, hash)); err != nil {
 				return err
 			}
+			// 当前运维会话保留（B-OPS-04），绑在它上面的 Grafana Cookie 作废（F-OPS-17 规则 1）。
+			if _, err := tx.Exec(c.ctx, `DELETE FROM biz.grafana_sessions WHERE session_hash = $1`, c.sess.IDHash); err != nil {
+				return err
+			}
 			return revokeAll(c.ctx, tx, c.acct.ID, c.sess.IDHash)
 		})
 	})

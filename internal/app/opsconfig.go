@@ -163,8 +163,12 @@ func (c *rc) fanoutRaw(path string) (map[string]json.RawMessage, []string) {
 	return got, missing
 }
 
+// opsReadPerMinute：配置检查、数据库页、Grafana 票据每个账号每分钟的上限。这些接口和探活共用节点的并发名额，
+// 配置检查和票据每次还写一条审计：不限流的话，一个只读账号循环请求就能让正常节点显示成不可达。
+const opsReadPerMinute = 30
+
 func (c *rc) opsConfig() {
-	if !c.requireFleet() {
+	if !c.requireFleet() || !c.minuteRate("ops.config", opsReadPerMinute) {
 		return
 	}
 	// 写失败不返回数据（AC-OPS-14-4）。查看配置是一次性事件，不分两阶段。
@@ -202,7 +206,7 @@ func (c *rc) opsConfig() {
 }
 
 func (c *rc) opsDB() {
-	if !c.requireFleet() {
+	if !c.requireFleet() || !c.minuteRate("ops.db", opsReadPerMinute) {
 		return
 	}
 	got, missing := c.fanoutRaw("/internal/v1/db")

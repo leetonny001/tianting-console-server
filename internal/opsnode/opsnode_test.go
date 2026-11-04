@@ -75,6 +75,21 @@ func TestLoadTableListsAllProblems(t *testing.T) {
 	if !strings.Contains(strings.Join(problems, "\n"), "n4 has no tlsServerName") {
 		t.Errorf("production must require TLS: %v", problems)
 	}
+	// 生产环境每个节点一把私钥。
+	if !strings.Contains(strings.Join(problems, "\n"), "uses the same key") {
+		t.Errorf("production must reject a shared key: %v", problems)
+	}
+	// 私钥文件别人能读就不用。
+	if err := os.Chmod(key, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, problems = LoadTable(table, false)
+	if !strings.Contains(strings.Join(problems, "\n"), "0600") {
+		t.Errorf("group-readable key accepted: %v", problems)
+	}
+	if err := os.Chmod(key, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	// 打印不出私钥。
 	list, _ := LoadTable(table, false)
 	if s := strings.Join([]string{list[0].Key.String()}, ""); strings.Contains(s, marker) {

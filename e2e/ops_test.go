@@ -803,7 +803,7 @@ func TestOpsGrafana(t *testing.T) {
 	}
 	resp.Body.Close()
 	up := <-o.grafReqs
-	if up.Header.Get("X-WEBAUTH-USER") != "oview1" || up.Header.Get("X-Tianting-Internal-User") != "" || strings.Contains(up.Header.Get("Cookie"), "grafana_sid") {
+	if up.Header.Get("X-WEBAUTH-USER") != "ops-oview1" || up.Header.Get("X-Tianting-Internal-User") != "" || strings.Contains(up.Header.Get("Cookie"), "grafana_sid") {
 		t.Errorf("upstream headers = %v", up.Header)
 	}
 

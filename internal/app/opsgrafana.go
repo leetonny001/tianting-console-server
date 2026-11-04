@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -42,6 +44,9 @@ func (c *rc) opsGrafanaTicket() {
 	cfg := c.a.Cfg.Ops
 	if cfg.GrafanaURL == "" || cfg.GrafanaHost == "" {
 		c.fail(apierr.New(apierr.Unavailable, "Grafana is not configured"))
+		return
+	}
+	if !c.minuteRate("ops.grafana.ticket", opsReadPerMinute) {
 		return
 	}
 	ticket, err := randomToken()
@@ -89,16 +94,39 @@ func (a *App) grafanaLogin(w http.ResponseWriter, r *http.Request, navigate bool
 }
 
 // 写接口只放行查询数据的：保存面板、数据源管理在代理这一层就拦下（Grafana 的 Viewer 也会拒绝，双重保护）。
+// Prometheus 只读查询接口：面板和查询构建器用的就是这些。status/config、targets、rules 不给（F-OPS-17 规则 2）。
+var promQueryPaths = regexp.MustCompile(`^/api/datasources/proxy/(uid/[a-z0-9_-]+|[0-9]+)/api/v1/(query|query_range|query_exemplars|labels|label/[^/]+/values|series|metadata|status/buildinfo)$`)
+
+// Viewer 用不到的 Grafana 接口。Grafana 自己也会拒绝大部分，这里多一层。
+var grafanaBlocked = []string{"/metrics", "/api/admin", "/api/users", "/api/org/users", "/api/orgs", "/api/serviceaccounts", "/api/access-control", "/api/live"}
+
 func grafanaAllowed(r *http.Request) bool {
+	// WebSocket 只在握手时校验一次会话，登出后还能继续收数据。
+	if r.Header.Get("Upgrade") != "" {
+		return false
+	}
 	p := r.URL.Path
-	if strings.HasPrefix(p, "/api/datasources") && !strings.HasPrefix(p, "/api/datasources/proxy") {
+	// 不规范的路径一律拒绝：上游可能归一化成另一条路径，前缀判断就白做了（/api/datasources/proxy/../../admin/users）。
+	if p == "" || p != path.Clean(p) && p != path.Clean(p)+"/" || strings.Contains(p, "\\") {
+		return false
+	}
+	if esc := strings.ToLower(r.URL.EscapedPath()); strings.Contains(esc, "%2f") || strings.Contains(esc, "%5c") || strings.Contains(esc, "%2e") {
+		return false
+	}
+	p = strings.ToLower(p) // 上游的路由可能不区分大小写
+	for _, b := range grafanaBlocked {
+		if p == b || strings.HasPrefix(p, b+"/") {
+			return false
+		}
+	}
+	if strings.HasPrefix(p, "/api/datasources") && !promQueryPaths.MatchString(p) {
 		return false
 	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
 		return true
 	case http.MethodPost:
-		return p == "/api/ds/query" || strings.HasPrefix(p, "/api/datasources/proxy/") || p == "/api/frontend-metrics"
+		return p == "/api/ds/query" || promQueryPaths.MatchString(p) || p == "/api/frontend-metrics"
 	}
 	return false
 }
@@ -163,13 +191,17 @@ func (a *App) grafanaHandler() http.Handler {
 			apierr.Write(w, apierr.New(apierr.Forbidden, "read-only"))
 			return
 		}
-		r.Header.Set(grafanaInternalUser, username)
+		r.Header.Set(grafanaInternalUser, grafanaIdentity(username))
 		proxy.ServeHTTP(w, r)
 	})
 }
 
 // grafanaInternalUser 只在进程内传递（Rewrite 里一定删除）：客户端自带也会被 ServeHTTP 覆盖。
 const grafanaInternalUser = "X-Tianting-Internal-User"
+
+// grafanaIdentity 是传给 Grafana 的身份。auth.proxy 按登录名找用户，运维账号如果叫 admin，
+// 就成了 Grafana 的服务器管理员：加前缀，运维账号怎么取名都碰不到 Grafana 的内置账号。
+func grafanaIdentity(username string) string { return "ops-" + username }
 
 // grafanaEnter 消费票据（原子删除：只能用一次），换主机专属 Cookie。
 func (a *App) grafanaEnter(w http.ResponseWriter, r *http.Request) {
@@ -185,6 +217,14 @@ func (a *App) grafanaEnter(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.Log.Error("grafana enter", "err", err)
 		apierr.Write(w, apierr.New(apierr.Internal, "internal error"))
+		return
+	}
+	// 拿票据的会话可能已经登出或过期：票据不能比会话活得久。
+	if _, ok, err := a.grafanaUser(r.Context(), sessionHash, false); err != nil || !ok {
+		if err != nil {
+			a.Log.Error("grafana enter", "err", err)
+		}
+		a.grafanaLogin(w, r, true)
 		return
 	}
 	cookie, err := randomToken()
@@ -211,6 +251,11 @@ func (a *App) grafanaSession(ctx context.Context, cookieHash string, navigate bo
 	if err != nil {
 		return "", false, err
 	}
+	return a.grafanaUser(ctx, sessionHash, navigate)
+}
+
+// grafanaUser 校验运维会话还有效、还有查看权限，返回用户名。
+func (a *App) grafanaUser(ctx context.Context, sessionHash string, navigate bool) (string, bool, error) {
 	now := a.Clock.Now().UnixMilli()
 	s, acct, roles, reason, err := a.checkSession(ctx, sessionHash, "ops", now)
 	if err != nil || reason != "" {

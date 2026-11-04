@@ -89,7 +89,7 @@ func serve(logger *slog.Logger) error {
 	errc := make(chan error, len(cfg.Spaces)+1)
 	var servers []*http.Server
 	for _, s := range cfg.Spaces {
-		srv := &http.Server{Addr: s.Addr, Handler: a.Handler(s), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 16 << 10}
+		srv := &http.Server{Addr: s.Addr, Handler: a.Handler(s), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 16 << 10}
 		servers = append(servers, srv)
 		go func() {
 			logger.Info("space listening", "space", s.Name, "addr", s.Addr, "tls", cfg.TLSCert != "")
