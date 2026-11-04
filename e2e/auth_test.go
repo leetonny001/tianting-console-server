@@ -653,8 +653,13 @@ func TestCON04Lockout(t *testing.T) {
 	}
 	ghost := failLogin(w, "ghost", "10.2.0.1")
 	expect(t, "ghost locked", ghost, 429, 4291)
-	if ghost.raw != locked.raw || headerNames(ghost.header) != headerNames(locked.header) {
+	// 等待时间取决于各自什么时候被锁，和账号是否存在无关；除此之外必须完全相同。
+	retry := regexp.MustCompile(`"retryAfterSeconds":\d+`)
+	if retry.ReplaceAllString(ghost.raw, "") != retry.ReplaceAllString(locked.raw, "") || headerNames(ghost.header) != headerNames(locked.header) {
 		t.Errorf("responses differ:\n%s\n%s", ghost.raw, locked.raw)
+	}
+	if !retry.MatchString(locked.raw) {
+		t.Errorf("no retry time: %s", locked.raw)
 	}
 	w.advance(15 * time.Minute)
 	expect(t, "after 15 minutes", good("10.2.0.1"), 200, 0)

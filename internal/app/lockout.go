@@ -58,8 +58,16 @@ func (c *rc) locked(username string) (bool, error) {
 	return until > c.now(), err
 }
 
-func lockedError() *apierr.Error {
-	return apierr.New(apierr.LoginLocked, "too many failed attempts, try again later")
+// lockedError 带上还要等多久，页面提示"请 N 分钟后再试"。锁定信息不区分账号是否存在。
+func (c *rc) lockedError(username string) *apierr.Error {
+	e := apierr.New(apierr.LoginLocked, "too many failed attempts, try again later")
+	var until int64
+	err := c.a.DB.QueryRow(c.ctx, `SELECT COALESCE(MAX(locked_until), 0) FROM auth.login_failures WHERE key = ANY($1)`,
+		[]string{keyNameIP(c.space.Name, username, c.ip), keyName(c.space.Name, username)}).Scan(&until)
+	if err == nil && until > c.now() {
+		e.Details = map[string]any{"retryAfterSeconds": (until - c.now() + 999) / 1000}
+	}
+	return e
 }
 
 // bump 给一个键加一次失败，达到上限时上锁。返回这次是否新上锁。

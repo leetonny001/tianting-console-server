@@ -130,7 +130,7 @@ func (c *rc) login() {
 		return
 	}
 	if locked {
-		c.fail(lockedError())
+		c.fail(c.lockedError(username))
 		return
 	}
 	acct, err := c.a.findAccount(c.ctx, c.space.Name, username)
@@ -273,7 +273,7 @@ func (c *rc) activate() {
 		return
 	}
 	if locked {
-		c.fail(lockedError())
+		c.fail(c.lockedError(username))
 		return
 	}
 	acct, err := c.a.findAccount(c.ctx, c.space.Name, username)

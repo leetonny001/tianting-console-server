@@ -186,7 +186,13 @@ func (c *rc) sessionPayload() map[string]any {
 	}
 }
 
-func (c *rc) session() { c.ok(c.sessionPayload()) }
+func (c *rc) session() {
+	p := c.sessionPayload()
+	if c.sess.State == "full" {
+		p["recoveryCodesLeft"] = c.recoveryLeft(false, 0)
+	}
+	c.ok(p)
+}
 
 func (c *rc) logout() {
 	if _, err := c.a.DB.Exec(c.ctx, `UPDATE auth.sessions SET revoked_reason = $2 WHERE id_hash = $1`, c.sess.IDHash, reasonLoggedOut); err != nil {
