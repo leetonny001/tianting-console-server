@@ -436,15 +436,18 @@ func stepBackups(u *user) {
 		mustRun("put-manifest", m.source, fmt.Sprint(m.at), string(raw))
 	}
 	groups := map[string]map[string]any{}
+	var last string
 	got := waitFor(90*time.Second, func() bool { // 接口有 30 秒缓存
-		for _, g := range list(u.do("GET", opsAPI+"/backups", nil).data(), "groups") {
+		r := u.do("GET", opsAPI+"/backups", nil)
+		last = r.raw
+		for _, g := range list(r.data(), "groups") {
 			m, _ := g.(map[string]any)
 			s, _ := m["source"].(string)
 			groups[s] = m
 		}
 		return num(groups["im"], "lastSuccessAt") == float64(fresh) && num(groups["console"], "lastSuccessAt") == float64(stale)
 	})
-	if check(got, "读到两个来源的最近一次成功", groups) {
+	if check(got, "读到两个来源的最近一次成功", last) {
 		check(groups["im"]["overdue"] == false, "1 分钟前的备份不标红", groups["im"])
 		check(groups["console"]["overdue"] == true, "2 小时 1 分钟前的备份标红", groups["console"])
 	}
@@ -580,7 +583,7 @@ func stepTroubleshoot(ctx context.Context, engineers []*user, samples int) {
 	first, _ := query(engineers[0], "acc-dual")
 	d := first.data()
 	conns := list(d, "connections")
-	check(first.status == 200 && len(conns) == 2 && d["verdict"] == "online" && first.body["partial"] == false, "双节点用户查到 2 条连接", first.raw)
+	check(first.status == 200 && len(conns) == 2 && d["verdict"] == "online" && first.body["partial"] == false, "双节点用户查到 2 条连接", first.raw[:min(len(first.raw), 300)])
 
 	var mu sync.Mutex
 	var lat []time.Duration
@@ -598,7 +601,9 @@ func stepTroubleshoot(ctx context.Context, engineers []*user, samples int) {
 					lat = append(lat, took)
 				} else {
 					bad++
-					fmt.Printf("  排查结果不符：%d %s\n", r.status, r.raw[:min(len(r.raw), 300)])
+					if bad <= 3 { // 同一个原因不要刷屏
+						fmt.Printf("  排查结果不符：%d %s\n", r.status, r.raw[:min(len(r.raw), 300)])
+					}
 				}
 				mu.Unlock()
 				time.Sleep(2100 * time.Millisecond) // 每个账号每分钟 30 次以内
