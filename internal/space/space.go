@@ -38,7 +38,7 @@ type Space struct {
 func Defaults(name string) (cookie string, p Policy, err error) {
 	switch name {
 	case Admin:
-		return "__Host-admin_sid", Policy{}, nil
+		return "__Host-adm_sid", Policy{}, nil
 	case Ops: // PRD-ops F-OPS-03 规则 4
 		return "__Host-ops_sid", Policy{NoDataImages: true, NoStyleNonce: true, FrameDeny: true}, nil
 	}

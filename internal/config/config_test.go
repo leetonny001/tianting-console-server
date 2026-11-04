@@ -82,7 +82,7 @@ func TestDevelopmentDefaults(t *testing.T) {
 	if len(problems) != 0 {
 		t.Fatal(problems)
 	}
-	if len(cfg.Spaces) != 2 || cfg.Spaces[0].CookieName != "__Host-admin_sid" || !cfg.Spaces[1].Policy.FrameDeny || cfg.Spaces[0].Addr == cfg.Spaces[1].Addr {
+	if len(cfg.Spaces) != 2 || cfg.Spaces[0].CookieName != "__Host-adm_sid" || !cfg.Spaces[1].Policy.FrameDeny || cfg.Spaces[0].Addr == cfg.Spaces[1].Addr {
 		t.Errorf("spaces = %+v", cfg.Spaces)
 	}
 	if !cfg.TicketPattern.MatchString("CS-1024") || cfg.TicketPattern.MatchString("a b") {

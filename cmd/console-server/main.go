@@ -5,6 +5,8 @@
 //	console-server [serve]            启动服务
 //	console-server migrate up|status  数据库迁移（用 CON_OWNER_DATABASE_URL，也就是 console_owner）
 //	console-server keys rotate        用当前数据密钥重新加密全部旧记录
+//	console-server account bootstrap --space admin|ops --username U   创建空间的第一个超管，输出一次性激活码
+//	console-server account unlock --space admin|ops --username U      解锁账号（应急）
 //
 // 配置全部来自环境变量，见 deploy/console-server.env.example。
 package main
@@ -12,6 +14,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -42,8 +45,10 @@ func main() {
 		err = migrate(os.Args[2:])
 	case "keys":
 		err = keys(os.Args[2:])
+	case "account":
+		err = account(os.Args[2:], logger)
 	default:
-		err = fmt.Errorf("unknown command %q; use serve, migrate or keys", cmd)
+		err = fmt.Errorf("unknown command %q; use serve, migrate, keys or account", cmd)
 	}
 	if err != nil {
 		logger.Error(err.Error())
@@ -73,6 +78,22 @@ func serve(logger *slog.Logger) error {
 	if len(problems) > 0 {
 		return app.JoinProblems(problems)
 	}
+
+	// 定时清理过期数据，并把合并的拒绝记录写进审计（F-CON-06 规则 3）。
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := a.Housekeeping(ctx); err != nil {
+					logger.Error("housekeeping", "err", err)
+				}
+			}
+		}
+	}()
 
 	errc := make(chan error, len(cfg.Spaces)+1)
 	var servers []*http.Server
@@ -153,6 +174,43 @@ func migrate(args []string) error {
 		return nil
 	}
 	return errors.New("usage: console-server migrate up|status")
+}
+
+func account(args []string, logger *slog.Logger) error {
+	if len(args) == 0 {
+		return errors.New("usage: console-server account bootstrap|unlock --space S --username U")
+	}
+	fs := flag.NewFlagSet("account", flag.ExitOnError)
+	spaceName := fs.String("space", "", "admin or ops")
+	username := fs.String("username", "", "account name")
+	_ = fs.Parse(args[1:])
+	cfg, err := load()
+	if err != nil {
+		return err
+	}
+	a, err := app.New(cfg, logger)
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+	ctx := context.Background()
+	switch args[0] {
+	case "bootstrap":
+		code, err := a.Bootstrap(ctx, *spaceName, *username)
+		if err != nil {
+			return err
+		}
+		// 激活码只显示这一次。
+		fmt.Printf("activation code for %s (valid for 24 hours): %s\n", *username, code)
+		return nil
+	case "unlock":
+		if err := a.CLIUnlock(ctx, *spaceName, *username); err != nil {
+			return err
+		}
+		fmt.Printf("unlocked %s\n", *username)
+		return nil
+	}
+	return errors.New("usage: console-server account bootstrap|unlock --space S --username U")
 }
 
 func keys(args []string) error {

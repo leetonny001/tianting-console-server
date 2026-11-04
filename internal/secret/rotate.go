@@ -37,13 +37,12 @@ func Rotate(ctx context.Context, db *pgxpool.Pool, k Keyring) (int, error) {
 	for {
 		n := 0
 		err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-			rows, err := tx.Query(ctx, `SELECT account_id, kid, nonce, ciphertext FROM auth.totp WHERE kid <> $1 ORDER BY account_id LIMIT 100 FOR UPDATE`, k.Active)
+			rows, err := tx.Query(ctx, `SELECT account_id::text, kid, nonce, ciphertext FROM auth.totp WHERE kid <> $1 ORDER BY account_id LIMIT 100 FOR UPDATE`, k.Active)
 			if err != nil {
 				return err
 			}
 			type rec struct {
-				id        int64
-				kid       string
+				id, kid   string
 				nonce, ct []byte
 			}
 			var batch []rec
@@ -60,13 +59,13 @@ func Rotate(ctx context.Context, db *pgxpool.Pool, k Keyring) (int, error) {
 			for _, r := range batch {
 				plain, err := k.Decrypt(r.id, r.kid, r.nonce, r.ct)
 				if err != nil {
-					return fmt.Errorf("account %d: %w", r.id, err)
+					return fmt.Errorf("account %s: %w", r.id, err)
 				}
 				kid, nonce, ct, err := k.Encrypt(r.id, plain)
 				if err != nil {
 					return err
 				}
-				if _, err := tx.Exec(ctx, `UPDATE auth.totp SET kid = $2, nonce = $3, ciphertext = $4 WHERE account_id = $1`, r.id, kid, nonce, ct); err != nil {
+				if _, err := tx.Exec(ctx, `UPDATE auth.totp SET kid = $2, nonce = $3, ciphertext = $4 WHERE account_id = $1::uuid`, r.id, kid, nonce, ct); err != nil {
 					return err
 				}
 			}

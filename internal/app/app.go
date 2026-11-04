@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -18,7 +19,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"tianting/console/assets"
 	"tianting/console/internal/apierr"
+	"tianting/console/internal/audit"
 	"tianting/console/internal/clock"
 	"tianting/console/internal/config"
 	"tianting/console/internal/httpx"
@@ -38,8 +41,15 @@ type App struct {
 	dbOK     atomic.Int64 // 上次确认数据库可用的时间（Unix 毫秒），1 秒内不重复 ping
 
 	// 测试模式的故障注入（CS-001 内容 8）。
-	AuditWriteFail atomic.Bool
-	IMLatencyMs    atomic.Int64
+	auditFault  atomic.Value // string
+	IMLatencyMs atomic.Int64
+
+	Audit  *audit.Writer
+	hasher *secret.Hasher
+	weak   map[string]bool
+
+	dummyOnce sync.Once
+	dummyHash string
 }
 
 // New 创建服务。连接是惰性的：开发环境数据库暂时不可用时也能启动，接口返回 503。
@@ -49,6 +59,8 @@ func New(cfg config.Config, log *slog.Logger) (*App, error) {
 		Name: "console_rejected_total", Help: "Requests rejected before authentication, by reason.",
 	}, []string{"reason"})
 	a.registry.MustRegister(a.rejected)
+	a.hasher = secret.NewHasher(cfg.Argon)
+	a.weak = assets.WeakPasswords()
 	if cfg.DatabaseURL != "" {
 		pool, err := pgxpool.New(context.Background(), string(cfg.DatabaseURL))
 		if err != nil {
@@ -57,6 +69,10 @@ func New(cfg config.Config, log *slog.Logger) (*App, error) {
 		}
 		a.DB = pool
 	}
+	a.Audit = &audit.Writer{DB: a.DB, Now: a.Clock.Now, Fault: func(phase string) bool {
+		f, _ := a.auditFault.Load().(string)
+		return f == "fail" || (f == "failResult" && phase == audit.PhaseResult)
+	}}
 	return a, nil
 }
 
@@ -107,14 +123,7 @@ func (a *App) Handler(s space.Space) http.Handler {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	api := http.NewServeMux()
-	// 登录在 CS-007 接入；在那之前没有任何有效会话。Cookie 只认本空间（规则 2）由 CS-009 的查询条件保证。
-	api.HandleFunc("GET /console/api/session", func(w http.ResponseWriter, _ *http.Request) {
-		apierr.Write(w, apierr.New(apierr.AuthRequired, "not signed in"))
-	})
-	api.HandleFunc("/console/api/", func(w http.ResponseWriter, _ *http.Request) {
-		apierr.Write(w, apierr.New(apierr.NotFound, "not found"))
-	})
+	api := a.apiMux(s)
 	mux.Handle("/console/api/", a.dbGate(api))
 	if a.Cfg.TestMode {
 		a.registerTestRoutes(mux)
@@ -151,13 +160,13 @@ func (a *App) registerTestRoutes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /console/test/faults", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			AuditWrite  string `json:"auditWrite"`
+			AuditWrite  string `json:"auditWrite"` // "fail"、"failResult"、"ok"
 			IMLatencyMs int64  `json:"imLatencyMs"`
 		}
 		if !readJSON(w, r, &req) {
 			return
 		}
-		a.AuditWriteFail.Store(req.AuditWrite == "fail")
+		a.auditFault.Store(req.AuditWrite)
 		a.IMLatencyMs.Store(req.IMLatencyMs)
 		w.WriteHeader(http.StatusOK)
 	})

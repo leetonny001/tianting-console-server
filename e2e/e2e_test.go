@@ -242,7 +242,7 @@ func TestSpaces(t *testing.T) {
 	}
 	// AC-CON-05-14、01-3（没有会话时 401 / 4014；带另一个空间的 Cookie 同样）。
 	for _, addr := range []string{both.admin, both.ops} {
-		code, h, body := get(t, "http://"+addr+"/console/api/session", map[string]string{"Cookie": "__Host-admin_sid=whatever"})
+		code, h, body := get(t, "http://"+addr+"/console/api/session", map[string]string{"Cookie": "__Host-adm_sid=whatever"})
 		if code != 401 || !strings.Contains(body, `"code":4014`) || h.Get("Cache-Control") != "no-store" {
 			t.Errorf("%s: %d %s %v", addr, code, body, h)
 		}
@@ -382,13 +382,19 @@ func TestMigrationsAndRoles(t *testing.T) {
 	mustDeny(`CREATE TABLE auth.x (id int)`)
 	mustDeny(`CREATE TABLE public.x (id int)`)
 	mustDeny(`DROP TABLE auth.totp`)
+	// AC-CON-08-3
+	mustDeny(`UPDATE audit.records SET reason = 'x'`)
+	mustDeny(`DELETE FROM audit.records`)
+	mustDeny(`TRUNCATE audit.records`)
+	mustDeny(`INSERT INTO audit.chain_head (id, seq, hash) VALUES (2, 0, '')`)
+	mustDeny(`DELETE FROM audit.chain_head`)
 	if _, err := app.Exec(ctx, `INSERT INTO audit.probe (id, note) VALUES (2, 'n')`); err != nil {
 		t.Errorf("insert into audit: %v", err)
 	}
-	if _, err := app.Exec(ctx, `INSERT INTO auth.totp (account_id, kid, nonce, ciphertext) VALUES (1, 'k', '\x00', '\x00')`); err != nil {
+	if _, err := app.Exec(ctx, `INSERT INTO auth.accounts (id, space, username, display_name, status, created_at) VALUES ('00000000-0000-7000-8000-000000000001', 'admin', 'probe', 'x', 'active', 1)`); err != nil {
 		t.Errorf("auth write: %v", err)
 	}
-	if _, err := app.Exec(ctx, `UPDATE auth.totp SET kid = 'k2'`); err != nil {
+	if _, err := app.Exec(ctx, `UPDATE auth.accounts SET display_name = 'y'`); err != nil {
 		t.Errorf("auth update: %v", err)
 	}
 
@@ -411,7 +417,7 @@ func TestMigrationsAndRoles(t *testing.T) {
 
 // AC-CON-11-1、11-2：库里只有密文；缺 kid 拒绝启动并指出；轮换后可以删旧 kid。
 func TestDataKeyRotation(t *testing.T) {
-	_, appURL := newDB(t)
+	ownerURL, appURL := newDB(t)
 	ctx := context.Background()
 	k1 := "k1:" + b64(testDataKey)
 	k2 := "k2:" + b64(strings.Repeat("e", 32))
@@ -425,12 +431,17 @@ func TestDataKeyRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	for id := int64(1); id <= 150; id++ { // 超过一批（100）
+	_ = ownerURL
+	for n := 1; n <= 150; n++ { // 超过一批（100）
+		id := fmt.Sprintf("00000000-0000-7000-8000-%012d", n)
+		if _, err := pool.Exec(ctx, `INSERT INTO auth.accounts (id, space, username, display_name, status, created_at) VALUES ($1::uuid, 'admin', $2, 'x', 'active', 1)`, id, fmt.Sprintf("user%d", n)); err != nil {
+			t.Fatal(err)
+		}
 		kid, nonce, ct, err := old.Encrypt(id, []byte(seed))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := pool.Exec(ctx, `INSERT INTO auth.totp (account_id, kid, nonce, ciphertext) VALUES ($1, $2, $3, $4)`, id, kid, nonce, ct); err != nil {
+		if _, err := pool.Exec(ctx, `INSERT INTO auth.totp (account_id, kid, nonce, ciphertext) VALUES ($1::uuid, $2, $3, $4)`, id, kid, nonce, ct); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -455,22 +466,21 @@ func TestDataKeyRotation(t *testing.T) {
 	// 删掉 k1 后能启动，全部记录能用 k2 解开。
 	start(t, "CON_DATABASE_URL="+appURL, "CON_DATA_KEYS="+k2, "CON_DATA_ACTIVE_KID=k2")
 	only, _ := secret.ParseKeyring(k2, "k2")
-	rows, err := pool.Query(ctx, `SELECT account_id, kid, nonce, ciphertext FROM auth.totp`)
+	rows, err := pool.Query(ctx, `SELECT account_id::text, kid, nonce, ciphertext FROM auth.totp`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
 	n := 0
 	for rows.Next() {
-		var id int64
-		var kid string
+		var id, kid string
 		var nonce, ct []byte
 		if err := rows.Scan(&id, &kid, &nonce, &ct); err != nil {
 			t.Fatal(err)
 		}
 		plain, err := only.Decrypt(id, kid, nonce, ct)
 		if err != nil || string(plain) != seed {
-			t.Errorf("account %d: %v", id, err)
+			t.Errorf("account %s: %v", id, err)
 		}
 		n++
 	}

@@ -24,20 +24,20 @@ func TestKeyringRoundTripAndBinding(t *testing.T) {
 	if err != nil || len(k.Problems()) != 0 {
 		t.Fatalf("%v %v", err, k.Problems())
 	}
-	kid, nonce, ct, err := k.Encrypt(7, []byte("JBSWY3DPEHPK3PXP"))
+	kid, nonce, ct, err := k.Encrypt("a7", []byte("JBSWY3DPEHPK3PXP"))
 	if err != nil || kid != "k2" {
 		t.Fatal(kid, err)
 	}
 	if strings.Contains(string(ct), "JBSWY3") {
 		t.Error("ciphertext contains the seed")
 	}
-	if got, err := k.Decrypt(7, kid, nonce, ct); err != nil || string(got) != "JBSWY3DPEHPK3PXP" {
+	if got, err := k.Decrypt("a7", kid, nonce, ct); err != nil || string(got) != "JBSWY3DPEHPK3PXP" {
 		t.Errorf("%s %v", got, err)
 	}
-	if _, err := k.Decrypt(8, kid, nonce, ct); err == nil {
+	if _, err := k.Decrypt("a8", kid, nonce, ct); err == nil {
 		t.Error("ciphertext moved to another account decrypts")
 	}
-	if _, err := k.Decrypt(7, "gone", nonce, ct); err == nil || !strings.Contains(err.Error(), "gone") {
+	if _, err := k.Decrypt("a7", "gone", nonce, ct); err == nil || !strings.Contains(err.Error(), "gone") {
 		t.Errorf("missing kid: %v", err)
 	}
 }

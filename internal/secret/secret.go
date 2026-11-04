@@ -10,10 +10,10 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -94,12 +94,10 @@ func gcm(key []byte) (cipher.AEAD, error) {
 }
 
 // aad 把账号 ID 绑进密文：把一个账号的密文复制给另一个账号时解不开。
-func aad(accountID int64) []byte {
-	return binary.BigEndian.AppendUint64(nil, uint64(accountID)) // #nosec G115 -- 只是把 64 位按原样编码，不做算术
-}
+func aad(accountID string) []byte { return []byte(accountID) }
 
 // Encrypt 用当前密钥加密。
-func (k Keyring) Encrypt(accountID int64, plain []byte) (kid string, nonce, ciphertext []byte, err error) {
+func (k Keyring) Encrypt(accountID string, plain []byte) (kid string, nonce, ciphertext []byte, err error) {
 	key, ok := k.Keys[k.Active]
 	if !ok {
 		return "", nil, nil, errors.New("no active data key")
@@ -116,7 +114,7 @@ func (k Keyring) Encrypt(accountID int64, plain []byte) (kid string, nonce, ciph
 }
 
 // Decrypt 解密。
-func (k Keyring) Decrypt(accountID int64, kid string, nonce, ciphertext []byte) ([]byte, error) {
+func (k Keyring) Decrypt(accountID string, kid string, nonce, ciphertext []byte) ([]byte, error) {
 	key, ok := k.Keys[kid]
 	if !ok {
 		return nil, fmt.Errorf("data key %s is not configured", kid)
@@ -179,6 +177,10 @@ func (h *Hasher) acquire(ctx context.Context) error {
 	}
 }
 
+// release 立刻把 Argon2id 的工作内存还给操作系统。每次计算分配 64MiB，交给 GC 的节奏回收时，
+// 50 个并发登录的 RSS 增量能到 450MB（AC-CON-11-4 要求 ≤ 300MB）。登录是低频操作，多一次 GC 的成本可以接受。
+func release() { debug.FreeOSMemory() }
+
 // Hash 返回 PHC 格式的哈希：$argon2id$v=19$m=...,t=...,p=...$salt$hash。
 func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 	if err := h.acquire(ctx); err != nil {
@@ -191,6 +193,7 @@ func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 	}
 	p := h.Params
 	sum := argon2.IDKey([]byte(password), salt, p.Time, p.MemoryKiB, p.Threads, 32)
+	release()
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, p.MemoryKiB, p.Time, p.Threads,
 		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(sum)), nil
 }
@@ -222,5 +225,6 @@ func (h *Hasher) Verify(ctx context.Context, encoded, password string) (bool, er
 	}
 	defer func() { <-h.sem }()
 	got := argon2.IDKey([]byte(password), salt, p.Time, p.MemoryKiB, p.Threads, uint32(len(want))) // #nosec G115 -- 长度来自自己写入的 32 字节哈希
+	release()
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,9 @@ type Config struct {
 	IMMsgReadKey secret.Bytes
 	IMTimeout    time.Duration
 	AuditAnchor  string
+	Argon        secret.ArgonParams
+	// DisableLockout 关闭账号锁定和 IP 限流，只在测试模式下有效（AC-CON-03-3 的时序测试）。
+	DisableLockout bool
 }
 
 // Redacted 是不会被打印的字符串（数据库连接串里有密码）。
@@ -184,6 +188,18 @@ func Load(getenv func(string) string) (cfg Config, problems []string) {
 		}
 		cfg.IMTimeout = d
 	}
+	cfg.Argon = secret.DefaultArgon
+	for key, dst := range map[string]*uint32{"CON_ARGON_MEMORY_KIB": &cfg.Argon.MemoryKiB, "CON_ARGON_TIME": &cfg.Argon.Time} {
+		if v := getenv(key); v != "" {
+			n, err := strconv.ParseUint(v, 10, 32)
+			if err != nil || n == 0 {
+				bad("%s must be a positive integer", key)
+				continue
+			}
+			*dst = uint32(n)
+		}
+	}
+	cfg.DisableLockout = cfg.TestMode && getenv("CON_TEST_DISABLE_LOCKOUT") == "1"
 	cfg.AuditAnchor = getenv("CON_AUDIT_ANCHOR")
 	if prod && cfg.AuditAnchor == "" {
 		bad("CON_AUDIT_ANCHOR is required in production")
