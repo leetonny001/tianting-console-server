@@ -1,0 +1,16 @@
+# 每天校验审计链（PRD-admin F-CON-08 规则 8）。校验失败时非 0 退出、站内通知超管和审计员。
+# 读取凭证只放在 audit-tasks.env：服务进程只有写入权限。
+[Unit]
+Description=Tianting console audit chain verification
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=console
+EnvironmentFile=/etc/tianting/console-server.env
+EnvironmentFile=/etc/tianting/audit-tasks.env
+ExecStart=/usr/local/bin/console-server audit verify
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

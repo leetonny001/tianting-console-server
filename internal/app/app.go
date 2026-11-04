@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,11 +21,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"tianting/console/assets"
+	"tianting/console/internal/anchor"
 	"tianting/console/internal/apierr"
 	"tianting/console/internal/audit"
 	"tianting/console/internal/clock"
 	"tianting/console/internal/config"
 	"tianting/console/internal/httpx"
+	"tianting/console/internal/imclient"
 	"tianting/console/internal/secret"
 	"tianting/console/internal/space"
 )
@@ -45,6 +48,14 @@ type App struct {
 	IMLatencyMs atomic.Int64
 
 	Audit  *audit.Writer
+	IM     *imclient.Client // 没有配置 im-server 时为 nil
+	Anchor anchor.Sink      // 没有配置锚定时为 nil（只有开发环境）
+
+	anchorWake     chan struct{}
+	resultFailures prometheus.Counter
+	anchorFailures prometheus.Counter
+	anchorLag      prometheus.Gauge
+
 	hasher *secret.Hasher
 	weak   map[string]bool
 
@@ -58,7 +69,11 @@ func New(cfg config.Config, log *slog.Logger) (*App, error) {
 	a.rejected = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "console_rejected_total", Help: "Requests rejected before authentication, by reason.",
 	}, []string{"reason"})
-	a.registry.MustRegister(a.rejected)
+	a.resultFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "console_audit_result_failures_total", Help: "Operations whose audit result could not be written."})
+	a.anchorFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "console_audit_anchor_failures_total", Help: "Failed writes to the external audit anchor."})
+	a.anchorLag = prometheus.NewGauge(prometheus.GaugeOpts{Name: "console_audit_anchor_lag_seconds", Help: "Seconds since the latest audit anchor."})
+	a.registry.MustRegister(a.rejected, a.resultFailures, a.anchorFailures, a.anchorLag)
+	a.anchorWake = make(chan struct{}, 1)
 	a.hasher = secret.NewHasher(cfg.Argon)
 	a.weak = assets.WeakPasswords()
 	if cfg.DatabaseURL != "" {
@@ -72,7 +87,27 @@ func New(cfg config.Config, log *slog.Logger) (*App, error) {
 	a.Audit = &audit.Writer{DB: a.DB, Now: a.Clock.Now, Fault: func(phase string) bool {
 		f, _ := a.auditFault.Load().(string)
 		return f == "fail" || (f == "failResult" && phase == audit.PhaseResult)
+	}, OnCommit: func(seq int64) {
+		if seq%anchorEvery == 0 {
+			select {
+			case a.anchorWake <- struct{}{}:
+			default:
+			}
+		}
 	}}
+	var err error
+	if a.Anchor, err = openAnchorSink(cfg); err != nil {
+		return nil, err
+	}
+	if cfg.IMAdminURL != "" && len(cfg.IMSigningKey) == ed25519.PrivateKeySize {
+		im := imclient.Config{BaseURL: cfg.IMAdminURL, Caller: cfg.IMCaller, Key: ed25519.PrivateKey(cfg.IMSigningKey), Timeout: cfg.IMTimeout, Clock: a.Clock}
+		if cfg.TestMode {
+			im.Latency = &a.IMLatencyMs
+		}
+		if a.IM, err = imclient.New(im); err != nil {
+			return nil, err
+		}
+	}
 	return a, nil
 }
 

@@ -21,7 +21,7 @@ func prodEnv(extra map[string]string) func(string) string {
 	m := map[string]string{
 		"CON_ENV": "production", "CON_SPACES": "admin", "CON_ADMIN_ALLOWED_CIDRS": "10.0.0.0/8",
 		"CON_ADMIN_ORIGIN": "https://admin.example.internal", "CON_DATABASE_URL": "postgres://console_app:pw-secret@db/console",
-		"CON_DATA_KEYS": "k1:" + b64(dataKey), "CON_HASH_PEPPER": b64(pepper), "CON_IM_SIGNING_KEY": b64(seed), "CON_AUDIT_ANCHOR": "s3://anchor",
+		"CON_DATA_KEYS": "k1:" + b64(dataKey), "CON_HASH_PEPPER": b64(pepper), "CON_IM_SIGNING_KEY": b64(seed), "CON_AUDIT_ANCHOR": "s3://anchor", "CON_AUDIT_ANCHOR_ENDPOINT": "https://s3.example.internal", "CON_AUDIT_ANCHOR_ACCESS_KEY": "w", "CON_AUDIT_ANCHOR_SECRET_KEY": "anchor-write-secret",
 	}
 	for k, v := range extra {
 		m[k] = v

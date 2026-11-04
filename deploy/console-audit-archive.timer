@@ -1,0 +1,9 @@
+[Unit]
+Description=Monthly audit archive
+
+[Timer]
+OnCalendar=*-*-02 04:10:00 Asia/Shanghai
+Persistent=true
+
+[Install]
+WantedBy=timers.target

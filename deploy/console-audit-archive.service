@@ -1,0 +1,16 @@
+# 每月归档满 1 年的审计分区（PRD-admin F-CON-09 规则 6）。私钥不在这台机器上。
+# 临时文件是密文，放 PrivateTmp；一个月的分区可能有几百 MB，磁盘要留够。
+[Unit]
+Description=Tianting console audit archive
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=console
+EnvironmentFile=/etc/tianting/console-server.env
+EnvironmentFile=/etc/tianting/audit-tasks.env
+ExecStart=/usr/local/bin/console-server audit archive
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

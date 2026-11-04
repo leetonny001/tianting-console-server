@@ -7,6 +7,8 @@
 //	console-server keys rotate        用当前数据密钥重新加密全部旧记录
 //	console-server account bootstrap --space admin|ops --username U   创建空间的第一个超管，输出一次性激活码
 //	console-server account unlock --space admin|ops --username U      解锁账号（应急）
+//	console-server audit verify [--from-seq N]                        校验审计链，发现问题时非 0 退出
+//	console-server audit archive                                      加密归档满 1 年的审计分区（用 CON_ARCHIVER_DATABASE_URL）
 //
 // 配置全部来自环境变量，见 deploy/console-server.env.example。
 package main
@@ -47,8 +49,10 @@ func main() {
 		err = keys(os.Args[2:])
 	case "account":
 		err = account(os.Args[2:], logger)
+	case "audit":
+		err = auditCmd(os.Args[2:], logger)
 	default:
-		err = fmt.Errorf("unknown command %q; use serve, migrate, keys or account", cmd)
+		err = fmt.Errorf("unknown command %q; use serve, migrate, keys, account or audit", cmd)
 	}
 	if err != nil {
 		logger.Error(err.Error())
@@ -79,21 +83,8 @@ func serve(logger *slog.Logger) error {
 		return app.JoinProblems(problems)
 	}
 
-	// 定时清理过期数据，并把合并的拒绝记录写进审计（F-CON-06 规则 3）。
-	go func() {
-		t := time.NewTicker(time.Minute)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				if err := a.Housekeeping(ctx); err != nil {
-					logger.Error("housekeeping", "err", err)
-				}
-			}
-		}
-	}()
+	// 定时任务：清理、合并拒绝记录、外部锚定、审计对账、预建分区。
+	go a.RunJobs(ctx)
 
 	errc := make(chan error, len(cfg.Spaces)+1)
 	var servers []*http.Server
@@ -211,6 +202,58 @@ func account(args []string, logger *slog.Logger) error {
 		return nil
 	}
 	return errors.New("usage: console-server account bootstrap|unlock --space S --username U")
+}
+
+func auditCmd(args []string, logger *slog.Logger) error {
+	const usage = "usage: console-server audit verify [--from-seq N] | audit archive"
+	if len(args) == 0 {
+		return errors.New(usage)
+	}
+	cfg, err := load()
+	if err != nil {
+		return err
+	}
+	a, err := app.New(cfg, logger)
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+	ctx := context.Background()
+	switch args[0] {
+	case "verify":
+		fs := flag.NewFlagSet("audit verify", flag.ExitOnError)
+		from := fs.Int64("from-seq", 0, "start from this seq (the previous record must still exist to check the link)")
+		_ = fs.Parse(args[1:])
+		res, err := a.AuditVerify(ctx, *from)
+		if err != nil {
+			return err
+		}
+		for _, w := range res.Warnings {
+			fmt.Println("warning:", w)
+		}
+		if res.AnchorSource != "external" {
+			fmt.Println("warning: anchors were read from the database only; configure CON_AUDIT_ANCHOR_READ_* to compare with the external store")
+		}
+		if res.Issue != nil {
+			fmt.Println("FAILED", res.Issue.String())
+			return errors.New("audit verify failed: " + res.Issue.Type)
+		}
+		fmt.Printf("OK records=%d first=%d last=%d anchors=%d source=%s\n", res.Records, res.FirstSeq, res.LastSeq, res.Anchors, res.AnchorSource)
+		return nil
+	case "archive":
+		done, err := a.AuditArchive(ctx)
+		for _, d := range done {
+			fmt.Printf("archived %s seq=%d..%d count=%d sha256=%s key=%s\n", d.Partition, d.First, d.Last, d.Count, d.SHA256, d.Key)
+		}
+		if err != nil {
+			return err
+		}
+		if len(done) == 0 {
+			fmt.Println("nothing to archive")
+		}
+		return nil
+	}
+	return errors.New(usage)
 }
 
 func keys(args []string) error {

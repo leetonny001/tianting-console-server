@@ -67,6 +67,8 @@ func (c *rc) failErr(where string, err error) {
 		c.fail(e)
 	case errors.Is(err, secret.ErrBusy):
 		c.fail(apierr.New(apierr.Unavailable, "too many requests, try again later"))
+	case errors.Is(err, imclient.ErrResultUnknown):
+		c.fail(apierr.New(apierr.ResultUnknown, "im-server did not answer in time"))
 	default:
 		c.a.Log.Error(where, "err", err, "requestId", c.requestID)
 		c.fail(apierr.New(apierr.Internal, "internal error"))
@@ -106,6 +108,11 @@ func (a *App) apiRoutes(ps perm.Space) []route {
 		{method: "POST", path: "/console/api/accounts/{id}/reset", perm: manage, stepUp: true, action: "account.reset", h: (*rc).resetAccount},
 		{method: "POST", path: "/console/api/accounts/{id}/unlock", perm: manage, stepUp: true, action: "account.unlock", h: (*rc).unlockAccount},
 	}
+	rs = append(rs,
+		route{method: "GET", path: auditPath, perm: ps.AuditPerm, action: actionAuditQuery, h: (*rc).auditQuery},
+		route{method: "GET", path: auditRequestPath, perm: ps.AuditPerm, action: actionAuditQuery, h: (*rc).auditRequest},
+		route{method: "GET", path: auditIMPath, perm: ps.AuditPerm, action: actionAuditQuery, h: (*rc).auditIM},
+	)
 	if ps.Emergency != "" { // 运维空间没有应急授权（PRD-ops AC-OPS-02-9）
 		rs = append(rs, route{method: "POST", path: "/console/api/me/emergency-grants", perm: ps.Emergency, stepUp: true, action: "account.emergency_grant", h: (*rc).emergencyGrant})
 	} else {
@@ -133,6 +140,15 @@ func (a *App) apiMux(s space.Space) *http.ServeMux {
 		w.Header().Set("Allow", "GET")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	})
+	// 审计只读（F-CON-09 规则 5）：不依赖默认行为，显式回 405。
+	for _, path := range []string{auditPath, auditRequestPath, auditIMPath} {
+		for _, method := range []string{"POST", "PUT", "PATCH", "DELETE"} {
+			mux.HandleFunc(method+" "+path, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Allow", "GET")
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			})
+		}
+	}
 	mux.HandleFunc("/console/api/", func(w http.ResponseWriter, r *http.Request) {
 		// 还没实现的业务接口也要先过会话：未登录的请求是 401，不暴露路由是否存在。
 		c := &rc{a: a, w: w, r: r, ctx: r.Context(), space: s, ps: ps}
@@ -267,6 +283,7 @@ func (c *rc) audited(action string, target audit.Target, params map[string]any, 
 		res.Result, res.Code = audit.Failure, apierr.Internal
 	}
 	if werr := c.a.Audit.Write(context.WithoutCancel(c.ctx), res); werr != nil {
+		c.a.resultFailures.Inc()
 		c.a.Log.Error("audit result write failed", "action", action, "requestId", c.requestID, "err", werr)
 	}
 	if err != nil {

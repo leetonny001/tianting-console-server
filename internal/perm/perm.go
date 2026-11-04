@@ -19,11 +19,13 @@ type Space struct {
 	Sensitive  []string            // 敏感角色：授予时通知审计员
 	ManagePerm string              // 账号管理权限点
 	Emergency  string              // 应急授权权限点；空表示这个空间没有应急授权
+	AuditPerm  string              // 查看审计的权限点
+	AuditAll   bool                // 审计员可以选"全部空间"（F-CON-09 规则 1：只有运维空间）
 }
 
 // Admin 是管理空间（第 5.2 节，第一批）。
 var Admin = Space{
-	Name: "admin", SuperAdmin: "super_admin", Auditor: "auditor", ManagePerm: "admin.manage", Emergency: "admin.emergency",
+	Name: "admin", SuperAdmin: "super_admin", Auditor: "auditor", ManagePerm: "admin.manage", Emergency: "admin.emergency", AuditPerm: "audit.read",
 	Exclusive: []string{"auditor"}, Sensitive: []string{"moderator", "auditor", "super_admin"},
 	Roles: map[string][]string{
 		"super_admin": {"user.read", "social.read", "group.read", "admin.manage", "admin.emergency"},
@@ -36,7 +38,7 @@ var Admin = Space{
 
 // Ops 是运维空间（PRD-ops F-OPS-02，第一批）。没有应急授权。
 var Ops = Space{
-	Name: "ops", SuperAdmin: "ops_superadmin", Auditor: "ops_auditor", ManagePerm: "ops.account.manage",
+	Name: "ops", SuperAdmin: "ops_superadmin", Auditor: "ops_auditor", ManagePerm: "ops.account.manage", AuditPerm: "ops.audit.read", AuditAll: true,
 	Exclusive: []string{"ops_superadmin", "ops_auditor"}, Sensitive: []string{"ops_superadmin", "ops_engineer", "ops_auditor"},
 	Roles: map[string][]string{
 		"ops_viewer":     {"ops.overview.read", "ops.config.read"},

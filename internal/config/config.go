@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"filippo.io/age"
+
 	"tianting/console/internal/secret"
 	"tianting/console/internal/space"
 )
@@ -46,10 +48,53 @@ type Config struct {
 	IMSigningKey secret.Bytes // Ed25519 私钥（64 字节）
 	IMMsgReadKey secret.Bytes
 	IMTimeout    time.Duration
-	AuditAnchor  string
+	Anchor       AnchorConfig
+	Archive      ArchiveConfig
 	Argon        secret.ArgonParams
 	// DisableLockout 关闭账号锁定和 IP 限流，只在测试模式下有效（AC-CON-03-3 的时序测试）。
 	DisableLockout bool
+}
+
+// AnchorConfig 是审计外部锚定（F-CON-08 规则 7）。服务只配写入凭证；读取凭证只配给 audit verify 和 audit archive 的环境。
+type AnchorConfig struct {
+	Target        string // s3://bucket/prefix，或日志平台的 https:// 地址
+	Bucket        string
+	Prefix        string
+	Endpoint      string
+	Region        string
+	AccessKey     string
+	SecretKey     secret.Bytes
+	ReadAccessKey string
+	ReadSecretKey secret.Bytes
+	Token         secret.Bytes // 日志平台的写入令牌
+	ReadToken     secret.Bytes // 日志平台的读取令牌
+	RetainDays    int
+}
+
+// S3 判断锚定存储是不是 Object Lock 桶。
+func (a AnchorConfig) S3() bool { return strings.HasPrefix(a.Target, "s3://") }
+
+// CanRead 判断有没有读取外部锚定的凭证。
+func (a AnchorConfig) CanRead() bool {
+	if a.S3() {
+		return a.ReadAccessKey != "" && len(a.ReadSecretKey) > 0
+	}
+	return a.Target != "" && len(a.ReadToken) > 0
+}
+
+// ArchiveConfig 是审计归档（F-CON-09 规则 6）。只有 audit archive 命令用，服务启动不需要。
+type ArchiveConfig struct {
+	Target       string // s3://bucket/prefix，必须和锚定不是同一个桶
+	Bucket       string
+	Prefix       string
+	Endpoint     string
+	Region       string
+	AccessKey    string
+	SecretKey    secret.Bytes
+	Recipient    string // age 公钥
+	Years        int
+	DatabaseURL  Redacted // console_archiver
+	TestIdentity string   // 只在测试模式下有效：age 私钥，归档后顺带解密核对
 }
 
 // Redacted 是不会被打印的字符串（数据库连接串里有密码）。
@@ -58,6 +103,9 @@ type Redacted string
 func (Redacted) String() string               { return "[redacted]" }
 func (Redacted) GoString() string             { return "[redacted]" }
 func (Redacted) MarshalText() ([]byte, error) { return []byte("[redacted]"), nil }
+
+// Raw 返回原文。
+func (r Redacted) Raw() string { return string(r) }
 
 // Production 判断是否生产环境。
 func (c Config) Production() bool { return c.Env == EnvProduction }
@@ -200,12 +248,97 @@ func Load(getenv func(string) string) (cfg Config, problems []string) {
 		}
 	}
 	cfg.DisableLockout = cfg.TestMode && getenv("CON_TEST_DISABLE_LOCKOUT") == "1"
-	cfg.AuditAnchor = getenv("CON_AUDIT_ANCHOR")
-	if prod && cfg.AuditAnchor == "" {
-		bad("CON_AUDIT_ANCHOR is required in production")
+	cfg.Anchor = loadAnchor(getenv, prod, bad)
+	cfg.Archive = loadArchive(getenv, cfg.TestMode, bad)
+	if cfg.Anchor.S3() && cfg.Archive.Bucket != "" && cfg.Anchor.Bucket == cfg.Archive.Bucket && cfg.Anchor.Endpoint == cfg.Archive.Endpoint {
+		bad("CON_AUDIT_ARCHIVE must not be the same bucket as CON_AUDIT_ANCHOR")
 	}
 	problems = append(problems, keysDistinct(cfg)...)
 	return cfg, problems
+}
+
+// parseS3 解析 s3://bucket/prefix。
+func parseS3(raw string) (bucket, prefix string, ok bool) {
+	rest, found := strings.CutPrefix(raw, "s3://")
+	if !found {
+		return "", "", false
+	}
+	bucket, prefix, _ = strings.Cut(rest, "/")
+	return bucket, strings.Trim(prefix, "/"), bucket != ""
+}
+
+func positiveInt(getenv func(string) string, name string, def int, bad func(string, ...any)) int {
+	v := getenv(name)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		bad("%s must be a positive integer", name)
+		return def
+	}
+	return n
+}
+
+func loadAnchor(getenv func(string) string, prod bool, bad func(string, ...any)) AnchorConfig {
+	a := AnchorConfig{
+		Target: getenv("CON_AUDIT_ANCHOR"), Endpoint: getenv("CON_AUDIT_ANCHOR_ENDPOINT"), Region: getenv("CON_AUDIT_ANCHOR_REGION"),
+		AccessKey: getenv("CON_AUDIT_ANCHOR_ACCESS_KEY"), SecretKey: secret.Bytes(getenv("CON_AUDIT_ANCHOR_SECRET_KEY")),
+		ReadAccessKey: getenv("CON_AUDIT_ANCHOR_READ_ACCESS_KEY"), ReadSecretKey: secret.Bytes(getenv("CON_AUDIT_ANCHOR_READ_SECRET_KEY")),
+		Token: secret.Bytes(getenv("CON_AUDIT_ANCHOR_TOKEN")), ReadToken: secret.Bytes(getenv("CON_AUDIT_ANCHOR_READ_TOKEN")),
+		// 归档保存 3 年 + 在线 1 年：锚定要活得比它们证明的记录久。
+		RetainDays: positiveInt(getenv, "CON_AUDIT_ANCHOR_RETAIN_DAYS", 4*366, bad),
+	}
+	switch {
+	case a.Target == "":
+		if prod {
+			bad("CON_AUDIT_ANCHOR is required in production")
+		}
+	case a.S3():
+		var ok bool
+		if a.Bucket, a.Prefix, ok = parseS3(a.Target); !ok {
+			bad("CON_AUDIT_ANCHOR must be s3://bucket[/prefix] or an http(s) URL")
+		}
+		if a.Endpoint == "" {
+			bad("CON_AUDIT_ANCHOR_ENDPOINT is required for an s3:// anchor")
+		} else if prod && !strings.HasPrefix(a.Endpoint, "https://") {
+			bad("CON_AUDIT_ANCHOR_ENDPOINT must be https:// in production")
+		}
+		if a.AccessKey == "" || len(a.SecretKey) == 0 {
+			bad("CON_AUDIT_ANCHOR_ACCESS_KEY and CON_AUDIT_ANCHOR_SECRET_KEY are required for an s3:// anchor")
+		}
+	case strings.HasPrefix(a.Target, "https://"), strings.HasPrefix(a.Target, "http://"):
+		if prod && !strings.HasPrefix(a.Target, "https://") {
+			bad("CON_AUDIT_ANCHOR must be https:// in production")
+		}
+	default:
+		bad("CON_AUDIT_ANCHOR must be s3://bucket[/prefix] or an http(s) URL")
+	}
+	return a
+}
+
+func loadArchive(getenv func(string) string, testMode bool, bad func(string, ...any)) ArchiveConfig {
+	a := ArchiveConfig{
+		Target: getenv("CON_AUDIT_ARCHIVE"), Endpoint: getenv("CON_AUDIT_ARCHIVE_ENDPOINT"), Region: getenv("CON_AUDIT_ARCHIVE_REGION"),
+		AccessKey: getenv("CON_AUDIT_ARCHIVE_ACCESS_KEY"), SecretKey: secret.Bytes(getenv("CON_AUDIT_ARCHIVE_SECRET_KEY")),
+		Recipient: getenv("CON_ARCHIVE_RECIPIENT"), Years: positiveInt(getenv, "CON_AUDIT_ARCHIVE_YEARS", 3, bad),
+		DatabaseURL: Redacted(getenv("CON_ARCHIVER_DATABASE_URL")),
+	}
+	if testMode {
+		a.TestIdentity = getenv("CON_TEST_ARCHIVE_IDENTITY")
+	}
+	if a.Target != "" {
+		var ok bool
+		if a.Bucket, a.Prefix, ok = parseS3(a.Target); !ok {
+			bad("CON_AUDIT_ARCHIVE must be s3://bucket[/prefix]")
+		}
+	}
+	if a.Recipient != "" {
+		if _, err := age.ParseX25519Recipient(a.Recipient); err != nil {
+			bad("CON_ARCHIVE_RECIPIENT is not a valid age public key")
+		}
+	}
+	return a
 }
 
 func parseCIDRs(raw, name string, bad func(string, ...any)) []netip.Prefix {

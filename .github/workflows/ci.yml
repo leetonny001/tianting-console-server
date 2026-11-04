@@ -33,6 +33,18 @@ jobs:
       - run: go vet ./...
       - run: go test -race -count=1 ./...
 
+  # 真实的 Object Lock 桶：假桶测不到 MinIO 对签名、Content-MD5 和锁定头的实际要求。
+  worm:
+    runs-on: ubuntu-latest
+    env:
+      CON_TEST_REQUIRE_DB: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: tools/minio-test.sh
+
   security:
     runs-on: ubuntu-latest
     steps:

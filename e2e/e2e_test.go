@@ -90,6 +90,9 @@ func newDB(t *testing.T) (owner, appURL string) {
 	if _, err := admin.Exec(ctx, "ALTER ROLE console_app LOGIN"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := admin.Exec(ctx, "ALTER ROLE console_archiver LOGIN"); err != nil {
+		t.Fatal(err)
+	}
 	return owner, withDB(adminURL(), name, "console_app")
 }
 
@@ -219,7 +222,7 @@ func prodEnv(appURL string) []string {
 	return []string{
 		"CON_ENV=production", "CON_SPACES=admin", "CON_ADMIN_ALLOWED_CIDRS=127.0.0.0/8", "CON_ADMIN_ORIGIN=https://admin.example.internal",
 		"CON_DATABASE_URL=" + appURL, "CON_DATA_KEYS=k1:" + b64(testDataKey), "CON_HASH_PEPPER=" + b64(testPepper),
-		"CON_IM_SIGNING_KEY=" + b64(testSeed), "CON_AUDIT_ANCHOR=s3://anchor",
+		"CON_IM_SIGNING_KEY=" + b64(testSeed), "CON_AUDIT_ANCHOR=s3://anchor", "CON_AUDIT_ANCHOR_ENDPOINT=https://s3.example.internal", "CON_AUDIT_ANCHOR_ACCESS_KEY=w", "CON_AUDIT_ANCHOR_SECRET_KEY=" + strings.Repeat("w", 32),
 	}
 }
 
@@ -284,6 +287,11 @@ func TestProductionStartupGuards(t *testing.T) {
 		{"no cidrs", with("CON_ADMIN_ALLOWED_CIDRS="), "CON_ADMIN_ALLOWED_CIDRS"},
 		{"0.0.0.0/0", with("CON_ADMIN_ALLOWED_CIDRS=0.0.0.0/0"), "0.0.0.0/0"},
 		{"no anchor", with("CON_AUDIT_ANCHOR="), "CON_AUDIT_ANCHOR"},
+		{"anchor without credentials", with("CON_AUDIT_ANCHOR_SECRET_KEY="), "CON_AUDIT_ANCHOR_SECRET_KEY"},
+		{"anchor over http", with("CON_AUDIT_ANCHOR_ENDPOINT=http://s3.example.internal"), "must be https"},
+		{"anchor bad scheme", with("CON_AUDIT_ANCHOR=ftp://x"), "CON_AUDIT_ANCHOR"},
+		{"archive in anchor bucket", with("CON_AUDIT_ARCHIVE=s3://anchor/old", "CON_AUDIT_ARCHIVE_ENDPOINT=https://s3.example.internal"), "same bucket"},
+		{"bad archive key", with("CON_ARCHIVE_RECIPIENT=not-a-key"), "CON_ARCHIVE_RECIPIENT"},
 		{"superuser role", append(prodEnv(owner), "CON_ADMIN_ADDR="+freeAddr(t)), "must be console_app"},
 		{"16 byte data key", with("CON_DATA_KEYS=k1:" + b64(strings.Repeat("d", 16))), "k1"},
 		{"data key equals signing key", with("CON_DATA_KEYS=k1:" + b64(testSeed)), "must be different"},
@@ -490,7 +498,9 @@ func TestDataKeyRotation(t *testing.T) {
 }
 
 // CS-004：对真实 im-server 的签名调用。需要同级目录有 tianting-server（CI 上是私有仓库，没有部署密钥时跳过）。
-func TestSignedCallToRealIMServer(t *testing.T) {
+// startRealIM 编译并启动真实的 im-server，返回管理地址和调用方私钥。没有 tianting-server 源码时跳过。
+func startRealIM(t *testing.T) (string, ed25519.PrivateKey) {
+	t.Helper()
 	src := os.Getenv("TIANTING_SERVER_DIR")
 	if src == "" {
 		src = "../../im-mvp/server"
@@ -536,6 +546,11 @@ func TestSignedCallToRealIMServer(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	return adminAddr, priv
+}
+
+func TestSignedCallToRealIMServer(t *testing.T) {
+	adminAddr, priv := startRealIM(t)
 	cl, err := imclient.New(imclient.Config{BaseURL: "http://" + adminAddr, Caller: "console", Key: priv})
 	if err != nil {
 		t.Fatal(err)

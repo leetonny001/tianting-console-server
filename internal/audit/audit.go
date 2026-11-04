@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"tianting/console/internal/ids"
@@ -80,6 +81,8 @@ type Writer struct {
 	DB    *pgxpool.Pool
 	Now   func() time.Time
 	Fault func(phase string) bool
+	// OnCommit 在写入提交后调用，用来在满 1000 条时立即唤醒锚定任务。不能阻塞。
+	OnCommit func(seq int64)
 }
 
 // Canonical 返回规范化 JSON：键排序、无空白、不转义 HTML。
@@ -167,15 +170,19 @@ func (w *Writer) Write(ctx context.Context, r Record) error {
 	if err != nil {
 		return err
 	}
-	return pgx.BeginFunc(ctx, w.DB, func(tx pgx.Tx) error {
-		var seq int64
+	var committed int64
+	write := func(tx pgx.Tx) error {
+		var seq, lastTS int64
 		var prev string
-		if err := tx.QueryRow(ctx, `SELECT seq, hash FROM audit.chain_head WHERE id = 1 FOR UPDATE`).Scan(&seq, &prev); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT seq, hash, ts FROM audit.chain_head WHERE id = 1 FOR UPDATE`).Scan(&seq, &prev, &lastTS); err != nil {
 			return err
 		}
 		seq++
+		committed = seq
+		// ts 随 seq 单调不减：这样一个月分区里的 seq 一定连续，归档后链才接得上。
+		ts := max(r.TS, lastTS)
 		hash, err := ComputeHash(HashInput{
-			Seq: seq, ID: r.ID, TS: r.TS, Space: r.Space, Phase: r.Phase, RequestID: r.RequestID, AccountID: r.AccountID, Username: r.Username,
+			Seq: seq, ID: r.ID, TS: ts, Space: r.Space, Phase: r.Phase, RequestID: r.RequestID, AccountID: r.AccountID, Username: r.Username,
 			Roles: roles, Actor: r.Actor, IP: r.IP, UA: r.UA, Action: r.Action, Target: target, Params: params, Reason: r.Reason, Ticket: r.Ticket,
 			Result: r.Result, Code: r.Code, PrevHash: prev,
 		})
@@ -184,10 +191,20 @@ func (w *Writer) Write(ctx context.Context, r Record) error {
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO audit.records (seq, id, ts, space, phase, request_id, account_id, username, roles, actor, ip, ua, action, target, params, reason, ticket, result, code, prev_hash, hash)
 			VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
-			seq, r.ID, r.TS, r.Space, r.Phase, r.RequestID, r.AccountID, r.Username, roles, r.Actor, r.IP, r.UA, r.Action, target, params, r.Reason, r.Ticket, r.Result, r.Code, prev, hash); err != nil {
+			seq, r.ID, ts, r.Space, r.Phase, r.RequestID, r.AccountID, r.Username, roles, r.Actor, r.IP, r.UA, r.Action, target, params, r.Reason, r.Ticket, r.Result, r.Code, prev, hash); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE audit.chain_head SET seq = $1, hash = $2 WHERE id = 1`, seq, hash)
+		_, err = tx.Exec(ctx, `UPDATE audit.chain_head SET seq = $1, hash = $2, ts = $3 WHERE id = 1`, seq, hash, ts)
 		return err
-	})
+	}
+	err = pgx.BeginFunc(ctx, w.DB, write)
+	// 正好在建这个月的分区时写入：语句已经路由到默认分区，等锁期间范围被划走了。重试一次就会路由到新分区。
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23514" {
+		err = pgx.BeginFunc(ctx, w.DB, write)
+	}
+	if err == nil && w.OnCommit != nil {
+		w.OnCommit(committed)
+	}
+	return err
 }
