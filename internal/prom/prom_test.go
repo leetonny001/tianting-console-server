@@ -59,3 +59,19 @@ func TestTodayWindow(t *testing.T) {
 		t.Error(q)
 	}
 }
+
+// alerts.yml 里汇总类告警的 node_id 是 all，页面按"全局"显示。
+func TestAlertsAggregateNode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"labels":{"alertname":"备份过期","severity":"critical","node_id":"all"},"startsAt":"2026-11-04T00:00:00Z"},
+			{"labels":{"alertname":"节点不可达","severity":"critical","node_id":"n1"},"startsAt":"2026-11-04T00:00:00Z"}]`))
+	}))
+	defer srv.Close()
+	got, err := (&Alertmanager{Base: srv.URL}).Alerts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Node != "" || got[1].Node != "n1" {
+		t.Fatalf("got %+v", got)
+	}
+}

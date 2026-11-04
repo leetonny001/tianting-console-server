@@ -164,7 +164,11 @@ func (a *Alertmanager) Alerts(ctx context.Context) ([]Alert, error) {
 	}
 	out := make([]Alert, 0, len(raw))
 	for _, r := range raw {
-		out = append(out, Alert{Name: r.Labels["alertname"], Severity: r.Labels["severity"], Node: r.Labels["node_id"], StartsAt: r.StartsAt, Summary: r.Annotations["summary"]})
+		node := r.Labels["node_id"]
+		if node == "all" { // 汇总类告警（alerts.yml）：不属于某个节点，页面显示"全局"
+			node = ""
+		}
+		out = append(out, Alert{Name: r.Labels["alertname"], Severity: r.Labels["severity"], Node: node, StartsAt: r.StartsAt, Summary: r.Annotations["summary"]})
 	}
 	return out, nil
 }
