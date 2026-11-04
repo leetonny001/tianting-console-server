@@ -1,0 +1,10 @@
+# 运维接口清单（PRD-ops 第 6 节）的机器可读版本。启动时和实际注册的路由比对，不一致就启动失败；
+# 权限矩阵测试（AC-OPS-02-1）用它做数据源。前缀 /console/api/ops/v1。
+- {method: GET, path: /overview, perm: ops.overview.read, audit: "", stepUp: false, batch: 1}
+- {method: GET, path: /nodes, perm: ops.overview.read, audit: "", stepUp: false, batch: 1}
+- {method: GET, path: /alerts, perm: ops.overview.read, audit: "", stepUp: false, batch: 1}
+- {method: POST, path: /troubleshoot/query, perm: ops.troubleshoot, audit: ops.troubleshoot.query, stepUp: false, batch: 1}
+- {method: GET, path: /config, perm: ops.config.read, audit: ops.config.view, stepUp: false, batch: 1}
+- {method: GET, path: /db, perm: ops.config.read, audit: "", stepUp: false, batch: 1}
+- {method: GET, path: /backups, perm: ops.config.read, audit: "", stepUp: false, batch: 1}
+- {method: POST, path: /grafana/ticket, perm: ops.overview.read, audit: ops.grafana.enter, stepUp: false, batch: 1}

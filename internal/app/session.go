@@ -89,38 +89,14 @@ func (a *App) loadSession(c *rc) bool {
 	}
 	c.sid = cookie.Value
 	hash := secret.SessionHash(c.sid)
-	var s sessionRow
-	err = a.DB.QueryRow(c.ctx, `SELECT id_hash, account_id::text, state, csrf_token_hash, revoked_reason, created_at, last_active_at, step_up_at, step_up_failures
-		FROM auth.sessions WHERE id_hash = $1 AND space = $2`, hash, c.space.Name).
-		Scan(&s.IDHash, &s.AccountID, &s.State, &s.CSRFHash, &s.Revoked, &s.CreatedAt, &s.LastActive, &s.StepUpAt, &s.StepUpFailures)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return reject(reasonNone)
-	}
+	now := c.now()
+	s, acct, roles, reason, err := a.checkSession(c.ctx, hash, c.space.Name, now)
 	if err != nil {
 		c.failErr("load session", err)
 		return false
 	}
-	now := c.now()
-	switch {
-	case s.Revoked != "":
-		return reject(s.Revoked)
-	case now-s.CreatedAt > absoluteTimeout.Milliseconds():
-		return reject(reasonAbsolute)
-	case now-s.LastActive > idleTimeout.Milliseconds():
-		return reject(reasonIdle)
-	}
-	acct, err := scanAccount(a.DB.QueryRow(c.ctx, `SELECT `+accountColumns+` FROM auth.accounts WHERE id = $1::uuid`, s.AccountID))
-	if err != nil {
-		c.failErr("load account", err)
-		return false
-	}
-	if acct.Status == "disabled" {
-		return reject(reasonRevoked)
-	}
-	roles, err := a.activeRoles(c.ctx, acct.ID)
-	if err != nil {
-		c.failErr("load roles", err)
-		return false
+	if reason != "" {
+		return reject(reason)
 	}
 	// 后台轮询不续期（规则 3）。
 	if c.r.Header.Get("X-Console-Background") != "1" {
@@ -131,6 +107,40 @@ func (a *App) loadSession(c *rc) bool {
 	}
 	c.sess, c.acct, c.roles = s, acct, roles
 	return true
+}
+
+// checkSession 判断会话是否有效（不续期）。reason 非空表示无效。Grafana 代理也用它，规则只有一份。
+func (a *App) checkSession(ctx context.Context, hash, spaceName string, now int64) (sessionRow, accountRow, []string, string, error) {
+	var s sessionRow
+	err := a.DB.QueryRow(ctx, `SELECT id_hash, account_id::text, state, csrf_token_hash, revoked_reason, created_at, last_active_at, step_up_at, step_up_failures
+		FROM auth.sessions WHERE id_hash = $1 AND space = $2`, hash, spaceName).
+		Scan(&s.IDHash, &s.AccountID, &s.State, &s.CSRFHash, &s.Revoked, &s.CreatedAt, &s.LastActive, &s.StepUpAt, &s.StepUpFailures)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return s, accountRow{}, nil, reasonNone, nil
+	}
+	if err != nil {
+		return s, accountRow{}, nil, "", err
+	}
+	switch {
+	case s.Revoked != "":
+		return s, accountRow{}, nil, s.Revoked, nil
+	case now-s.CreatedAt > absoluteTimeout.Milliseconds():
+		return s, accountRow{}, nil, reasonAbsolute, nil
+	case now-s.LastActive > idleTimeout.Milliseconds():
+		return s, accountRow{}, nil, reasonIdle, nil
+	}
+	acct, err := scanAccount(a.DB.QueryRow(ctx, `SELECT `+accountColumns+` FROM auth.accounts WHERE id = $1::uuid`, s.AccountID))
+	if err != nil {
+		return s, accountRow{}, nil, "", err
+	}
+	if acct.Status == "disabled" {
+		return s, acct, nil, reasonRevoked, nil
+	}
+	roles, err := a.activeRoles(ctx, acct.ID)
+	if err != nil {
+		return s, acct, nil, "", err
+	}
+	return s, acct, roles, "", nil
 }
 
 // activeRoles 返回未过期的角色（应急授权到期按 [C 钟] 判断，不需要定时任务）。

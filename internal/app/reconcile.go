@@ -57,9 +57,9 @@ func (a *App) imAudit(ctx context.Context, operator, requestID string, from, to 
 	return page.Entries, err
 }
 
-// localOnlyAction：只改 console 自己数据库的动作，im-server 不知道它们，没法靠 im-server 判断结果。
+// localOnlyAction：im-server 的管理审计里查不到的动作（改 console 自己的库，或走运维接口的只读查询），没法靠它判断结果。
 func localOnlyAction(action string) bool {
-	for _, p := range []string{"account.", "auth.", "audit."} {
+	for _, p := range []string{"account.", "auth.", "audit.", "ops."} {
 		if strings.HasPrefix(action, p) {
 			return true
 		}

@@ -18,6 +18,7 @@ import (
 
 	"filippo.io/age"
 
+	"tianting/console/internal/opsnode"
 	"tianting/console/internal/secret"
 	"tianting/console/internal/space"
 )
@@ -50,6 +51,7 @@ type Config struct {
 	IMTimeout    time.Duration
 	Anchor       AnchorConfig
 	Archive      ArchiveConfig
+	Ops          OpsConfig
 	Argon        secret.ArgonParams
 	// DisableLockout 关闭账号锁定和 IP 限流，只在测试模式下有效（AC-CON-03-3 的时序测试）。
 	DisableLockout bool
@@ -95,6 +97,59 @@ type ArchiveConfig struct {
 	Years        int
 	DatabaseURL  Redacted // console_archiver
 	TestIdentity string   // 只在测试模式下有效：age 私钥，归档后顺带解密核对
+}
+
+// OpsConfig 是运维模块（PRD-ops）。只有开启 ops 空间时才检查。
+type OpsConfig struct {
+	Nodes           []opsnode.Entry
+	CAFile          string
+	PrometheusURL   string
+	AlertmanagerURL string
+	BackupBucket    string
+	BackupPrefix    string
+	BackupEndpoint  string
+	BackupRegion    string
+	BackupAccessKey string
+	BackupSecretKey secret.Bytes
+	GrafanaURL      string // Grafana 真实地址，只有 console-server 能访问
+	GrafanaHost     string // grafana.ops.<内网域名>：浏览器访问的主机名
+}
+
+func loadOps(getenv func(string) string, prod, enabled bool, bad func(string, ...any)) OpsConfig {
+	o := OpsConfig{
+		CAFile: getenv("CON_OPS_CA_FILE"), PrometheusURL: getenv("CON_OPS_PROMETHEUS_URL"), AlertmanagerURL: getenv("CON_OPS_ALERTMANAGER_URL"),
+		BackupEndpoint: getenv("CON_OPS_BACKUP_ENDPOINT"), BackupRegion: getenv("CON_OPS_BACKUP_REGION"), BackupAccessKey: getenv("CON_OPS_BACKUP_ACCESS_KEY"),
+		BackupSecretKey: secret.Bytes(getenv("CON_OPS_BACKUP_SECRET_KEY")), GrafanaURL: getenv("CON_OPS_GRAFANA_URL"), GrafanaHost: getenv("CON_OPS_GRAFANA_HOST"),
+	}
+	if raw := getenv("CON_OPS_BACKUP_STORE"); raw != "" {
+		var ok bool
+		if o.BackupBucket, o.BackupPrefix, ok = parseS3(raw); !ok {
+			bad("CON_OPS_BACKUP_STORE must be s3://bucket[/prefix]")
+		}
+	}
+	if !enabled {
+		return o
+	}
+	if path := getenv("CON_OPS_NODES"); path != "" {
+		list, problems := opsnode.LoadTable(path, prod)
+		o.Nodes = list
+		for _, p := range problems {
+			bad("%s", p)
+		}
+	}
+	// B-OPS-15：运维生产启动保护。
+	if prod {
+		if len(o.Nodes) == 0 {
+			bad("CON_OPS_NODES is required in production: the node credential table has no nodes")
+		}
+		if o.CAFile == "" {
+			bad("CON_OPS_CA_FILE is required in production")
+		}
+		if o.GrafanaURL == "" || o.GrafanaHost == "" {
+			bad("CON_OPS_GRAFANA_URL and CON_OPS_GRAFANA_HOST are required in production")
+		}
+	}
+	return o
 }
 
 // Redacted 是不会被打印的字符串（数据库连接串里有密码）。
@@ -250,6 +305,8 @@ func Load(getenv func(string) string) (cfg Config, problems []string) {
 	cfg.DisableLockout = cfg.TestMode && getenv("CON_TEST_DISABLE_LOCKOUT") == "1"
 	cfg.Anchor = loadAnchor(getenv, prod, bad)
 	cfg.Archive = loadArchive(getenv, cfg.TestMode, bad)
+	_, opsEnabled := cfg.Space(space.Ops)
+	cfg.Ops = loadOps(getenv, prod, opsEnabled, bad)
 	if cfg.Anchor.S3() && cfg.Archive.Bucket != "" && cfg.Anchor.Bucket == cfg.Archive.Bucket && cfg.Anchor.Endpoint == cfg.Archive.Endpoint {
 		bad("CON_AUDIT_ARCHIVE must not be the same bucket as CON_AUDIT_ANCHOR")
 	}

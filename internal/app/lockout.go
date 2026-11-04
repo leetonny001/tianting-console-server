@@ -182,6 +182,8 @@ func (a *App) Housekeeping(ctx context.Context) error {
 		{`DELETE FROM biz.minute_rate WHERE minute < $1`, now/60_000 - 2},
 		{`DELETE FROM biz.import_jobs WHERE expires_at < $1`, now - 24*time.Hour.Milliseconds()},
 		{`DELETE FROM biz.meta_sessions WHERE until < $1`, now},
+		{`DELETE FROM biz.grafana_tickets WHERE expires_at < $1`, now},
+		{`DELETE FROM biz.grafana_sessions WHERE created_at < $1`, now - 2*absoluteTimeout.Milliseconds()},
 	} {
 		if _, err := a.DB.Exec(ctx, q.sql, q.arg); err != nil {
 			return err

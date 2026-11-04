@@ -28,6 +28,9 @@ import (
 	"tianting/console/internal/config"
 	"tianting/console/internal/httpx"
 	"tianting/console/internal/imclient"
+	"tianting/console/internal/objstore"
+	"tianting/console/internal/opsnode"
+	"tianting/console/internal/prom"
 	"tianting/console/internal/secret"
 	"tianting/console/internal/space"
 )
@@ -47,9 +50,16 @@ type App struct {
 	auditFault  atomic.Value // string
 	IMLatencyMs atomic.Int64
 
-	Audit  *audit.Writer
-	IM     *imclient.Client // 没有配置 im-server 时为 nil
-	Anchor anchor.Sink      // 没有配置锚定时为 nil（只有开发环境）
+	Audit *audit.Writer
+	IM    *imclient.Client // 没有配置 im-server 时为 nil
+
+	// 运维模块（PRD-ops）。都可能为 nil：没有配置时对应卡片显示"数据不可用"。
+	Nodes        *opsnode.Fleet
+	Prom         *prom.Client
+	Alertmanager *prom.Alertmanager
+	Backups      *objstore.Store
+	backupCache  backupCacheEntry
+	Anchor       anchor.Sink // 没有配置锚定时为 nil（只有开发环境）
 
 	anchorWake     chan struct{}
 	resultFailures prometheus.Counter
@@ -83,6 +93,9 @@ func New(cfg config.Config, log *slog.Logger) (*App, error) {
 			return nil, errors.New("CON_DATABASE_URL is not a valid connection string")
 		}
 		a.DB = pool
+	}
+	if err := a.setupOps(); err != nil {
+		return nil, err
 	}
 	a.Audit = &audit.Writer{DB: a.DB, Now: a.Clock.Now, Fault: func(phase string) bool {
 		f, _ := a.auditFault.Load().(string)
@@ -169,13 +182,25 @@ func (a *App) Handler(s space.Space) http.Handler {
 	if s.WebDir != "" {
 		mux.Handle("/", httpx.Static(s.WebDir))
 	}
+	var root http.Handler = mux
+	if s.Name == "ops" && a.Cfg.Ops.GrafanaHost != "" {
+		// Grafana 主机：同一进程按 Host 分流，网段限制同样生效（Guard 在外层）。
+		grafana := a.grafanaHandler()
+		root = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if a.isGrafanaHost(r) {
+				grafana.ServeHTTP(w, r)
+				return
+			}
+			mux.ServeHTTP(w, r)
+		})
+	}
 	return httpx.Guard{
 		Space: s, Trusted: a.Cfg.TrustedProxies, Production: a.Cfg.Production(),
 		OnReject: func(reason string) {
 			a.rejected.WithLabelValues(reason).Inc()
 			a.Log.Info("request rejected", "space", s.Name, "reason", reason)
 		},
-	}.Wrap(mux)
+	}.Wrap(root)
 }
 
 func (a *App) registerTestRoutes(mux *http.ServeMux) {
@@ -190,6 +215,13 @@ func (a *App) registerTestRoutes(mux *http.ServeMux) {
 			a.Clock.Unfreeze()
 		} else {
 			a.Clock.Freeze(time.UnixMilli(*req.NowMs))
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /console/test/probe", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.ProbeNodes(r.Context()); err != nil {
+			apierr.Write(w, apierr.New(apierr.Internal, "probe failed"))
+			return
 		}
 		w.WriteHeader(http.StatusOK)
 	})
@@ -228,6 +260,9 @@ func (f StartupCheckFunc) Check(ctx context.Context, a *App) []string { return f
 // StartupProblems 跑完全部检查，一次返回全部问题（规则 9）。
 func (a *App) StartupProblems(ctx context.Context, extra ...StartupCheck) []string {
 	checks := append([]StartupCheck{StartupCheckFunc(keysInUse)}, extra...)
+	if _, ok := a.Cfg.Space("ops"); ok {
+		checks = append(checks, StartupCheckFunc(func(context.Context, *App) []string { return checkOpsRoutes(opsRoutes()) }))
+	}
 	if a.Cfg.Production() {
 		checks = append(checks, StartupCheckFunc(databaseRole))
 	}

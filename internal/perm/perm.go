@@ -42,7 +42,7 @@ var Ops = Space{
 	Exclusive: []string{"ops_superadmin", "ops_auditor"}, Sensitive: []string{"ops_superadmin", "ops_engineer", "ops_auditor"},
 	Roles: map[string][]string{
 		"ops_viewer":     {"ops.overview.read", "ops.config.read"},
-		"ops_engineer":   {"ops.overview.read", "ops.config.read", "ops.troubleshoot"},
+		"ops_engineer":   {"ops.overview.read", "ops.config.read", "ops.troubleshoot", "ops.silence.write"},
 		"ops_auditor":    {"ops.audit.read"},
 		"ops_superadmin": {"ops.account.manage"},
 	},

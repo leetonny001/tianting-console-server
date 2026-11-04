@@ -27,6 +27,8 @@ type route struct {
 	allowSetup   bool // setup 会话也能调用
 	stepUp       bool // 需要 5 分钟内 step-up
 	sensitive    bool // 带理由的敏感查询：必须 POST（CS-020 内容 3），userId 和理由不进 URL
+	// deniedTarget 让越权记录也带上目标（AC-OPS-02-5）。
+	deniedTarget func(*rc) audit.Target
 	action       string
 	h            func(*rc)
 }
@@ -42,7 +44,8 @@ type rc struct {
 	route     route
 	ip, ua    string
 	requestID string
-	ticket    string // 工单号：audited 写进 intent 和 result
+	ticket    string       // 工单号：audited 写进 intent 和 result
+	denied    audit.Target // 越权记录的目标
 	// resultParams 是 result 记录的 params（条数、成功批数）。fn 里设置。
 	resultParams map[string]any
 	sid          string
@@ -122,6 +125,10 @@ func (a *App) apiRoutes(ps perm.Space) []route {
 	if ps.Name == "admin" {
 		rs = append(rs, businessRoutes()...)
 	}
+	if ps.Name == "ops" {
+		rs = append(rs, opsRoutes()...)
+		rs = append(rs, route{method: "GET", path: "/console/api/auth/bootstrap-status", public: true, h: (*rc).bootstrapStatus})
+	}
 	if ps.Emergency != "" { // 运维空间没有应急授权（PRD-ops AC-OPS-02-9）
 		rs = append(rs, route{method: "POST", path: "/console/api/me/emergency-grants", perm: ps.Emergency, stepUp: true, action: "account.emergency_grant", h: (*rc).emergencyGrant})
 	} else {
@@ -152,6 +159,9 @@ func (a *App) apiMux(s space.Space) *http.ServeMux {
 		w.Header().Set("Allow", "GET")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	})
+	if s.Name == "ops" {
+		registerMethodGuards(mux, opsRoutes())
+	}
 	// 审计只读（F-CON-09 规则 5）：不依赖默认行为，显式回 405。
 	for _, path := range []string{auditPath, auditRequestPath, auditIMPath} {
 		for _, method := range []string{"POST", "PUT", "PATCH", "DELETE"} {
@@ -209,6 +219,9 @@ func (a *App) serve(rt route, s space.Space, ps perm.Space) http.HandlerFunc {
 			action := rt.action
 			if action == "" {
 				action = rt.method + " " + rt.path
+			}
+			if rt.deniedTarget != nil {
+				c.denied = rt.deniedTarget(c)
 			}
 			a.recordDenied(c, action)
 			c.fail(apierr.New(apierr.Forbidden, "permission denied"))

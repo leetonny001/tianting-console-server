@@ -134,7 +134,7 @@ func (cl *Client) Do(ctx context.Context, call Call, method, path string, query 
 			return ErrResultUnknown
 		}
 		// 连接中断时请求可能已经到了 im-server：一律算"结果未知"，由对账确认。
-		return fmt.Errorf("%w: %v", ErrResultUnknown, errors.Unwrap(err))
+		return fmt.Errorf("%w: %w", ErrResultUnknown, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))

@@ -35,3 +35,11 @@ go test -race ./...
 - **凭证分开**：服务进程（`console-server.env`）只有锚定桶的写入凭证；读取凭证和归档凭证只放 `audit-tasks.env`，只给上面两个命令。校验比对的是外部存储，因为能改审计表的人同样能改库里的 `audit.anchors`。
 - 对账：每 10 分钟补写缺失的结论。只改 console 自己数据库的动作（`account.*`、`auth.*`、`audit.*`）im-server 查不到，补写 `result=unknown`、`params.reconciled="localOnly"`，不会声称"没有执行"。
 - `tools/minio-test.sh` 用真实的 MinIO（Object Lock）跑一遍读写权限，需要 docker，CI 里运行。
+
+## 运维模块
+
+接口清单是 `api/ops-routes.yaml`，启动时和注册的路由比对，不一致就启动失败；权限矩阵测试用它做数据源。节点凭证、Prometheus、Alertmanager、备份桶、Grafana 的配置见 `deploy/console-server.env.example`。
+
+- 总览和节点列表只读 Postgres 里的探测结果（每 5 秒一次，多实例不重复），不在用户请求时扇出到节点。
+- Grafana 用一次性票据换主机专属 Cookie，Cookie 绑定原运维会话；只有页面导航续期，数据查询不续期。
+- 在开发机上测试时，Prometheus、Alertmanager、备份桶和 Grafana 是假服务；节点是真实的 im-server。

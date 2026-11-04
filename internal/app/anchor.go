@@ -232,6 +232,20 @@ func (a *App) RunJobs(ctx context.Context) {
 		}
 	}
 	logErr("ensure partitions", a.EnsurePartitions(ctx))
+	if a.Nodes != nil {
+		go func() {
+			t := time.NewTicker(probeEvery)
+			defer t.Stop()
+			for {
+				logErr("node probe", a.ProbeNodes(ctx))
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+			}
+		}()
+	}
 	lastReconcile, lastPartition := a.Clock.Now(), a.Clock.Now()
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()

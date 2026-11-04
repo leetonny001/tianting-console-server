@@ -480,7 +480,7 @@ func (a *App) recordDenied(c *rc, action string) {
 	}
 	if total <= deniedLimit {
 		r := c.base(audit.PhaseEvent, action)
-		r.Result, r.Code = audit.Denied, apierr.Forbidden
+		r.Target, r.Result, r.Code = c.denied, audit.Denied, apierr.Forbidden
 		if err := a.Audit.Write(ctx, r); err != nil {
 			a.Log.Error("audit denied", "err", err)
 		}

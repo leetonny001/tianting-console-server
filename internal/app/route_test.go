@@ -18,13 +18,13 @@ func TestRouteWithoutPermissionPanics(t *testing.T) {
 	checkRoute(route{method: "GET", path: "/console/api/new-thing"})
 }
 
-// 全部路由都声明了：公开路由只有登录和激活；账号管理都要权限点，写操作都要 step-up。
+// 全部路由都声明了：公开路由只有登录、激活和运维空间的引导状态；账号管理都要权限点，写操作都要 step-up。
 func TestRouteTable(t *testing.T) {
 	a := &App{}
 	for _, ps := range []perm.Space{perm.Admin, perm.Ops} {
 		for _, rt := range a.apiRoutes(ps) {
 			checkRoute(rt)
-			if rt.public && rt.path != "/console/api/auth/login" && rt.path != "/console/api/auth/activate" {
+			if rt.public && rt.path != "/console/api/auth/login" && rt.path != "/console/api/auth/activate" && rt.path != "/console/api/auth/bootstrap-status" {
 				t.Errorf("public route: %s", rt.path)
 			}
 			if strings.HasPrefix(rt.path, "/console/api/accounts") {
