@@ -22,14 +22,24 @@ jobs:
     env:
       CON_TEST_ADMIN_URL: postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable
       CON_TEST_REQUIRE_DB: "1"
+      HAS_SERVER_KEY: ${{ secrets.TIANTING_SERVER_DEPLOY_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
+      # 端到端测试要真实的 im-server。没有部署密钥（scripts/setup-ci-deploy-keys.sh）时这些测试跳过。
+      - uses: actions/checkout@v4
+        if: env.HAS_SERVER_KEY == 'true'
+        with:
+          repository: leetonny001/tianting-server
+          ssh-key: ${{ secrets.TIANTING_SERVER_DEPLOY_KEY }}
+          path: .deps/tianting-server
+      - run: echo "TIANTING_SERVER_DIR=$PWD/.deps/tianting-server/server" >>"$GITHUB_ENV"
+        if: env.HAS_SERVER_KEY == 'true'
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - run: go mod verify
       - name: gofmt
-        run: test -z "$(gofmt -l .)"
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
       - run: go vet ./...
       - run: go test -race -count=1 ./...
 

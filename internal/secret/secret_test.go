@@ -110,6 +110,7 @@ func TestPasswordHash(t *testing.T) {
 // AC-CON-11-4（并发部分）：同时进行的计算不超过 4 个，排队超时 ErrBusy。
 func TestHasherLimitsConcurrency(t *testing.T) {
 	h := NewHasher(ArgonParams{MemoryKiB: 8 * 1024, Time: 2, Threads: 1})
+	h.Timeout = time.Minute // 这里只测并发上限；慢机器上 50 个排不完 2 秒。排队超时在下面单独断言
 	var peak atomic.Int32
 	stop := make(chan struct{})
 	go func() {
