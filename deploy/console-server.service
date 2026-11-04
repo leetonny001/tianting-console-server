@@ -1,0 +1,17 @@
+[Unit]
+Description=Tianting console-server
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/tianting/console-server.env
+ExecStart=/usr/local/bin/console-server serve
+Restart=on-failure
+User=console
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,50 @@
+{
+  "comment": "运维接口签名向量（PRD-ops F-OPS-16），由 server/internal/opsapi/vectors_test.go 生成：go test ./internal/opsapi -run TestOpsVectors -update。调用方固定为 console-ops，第 8 行 X-IM-Target-Node 必填。",
+  "vectors": [
+    {
+      "name": "node",
+      "seed": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+      "publicKey": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+      "method": "GET",
+      "path": "/internal/v1/node",
+      "timestamp": "1800000000000",
+      "nonce": "AAAAAAAAAAAAAAAAAAAAAAAA",
+      "body": "",
+      "operator": "ops:a1",
+      "requestId": "req-1",
+      "targetNode": "n1",
+      "stringToSign": "GET\n/internal/v1/node\n1800000000000\nAAAAAAAAAAAAAAAAAAAAAAAA\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nops:a1\nreq-1\nn1",
+      "signature": "3POAOYuA8qeFqXpM7vso5cP1ODMuWELBQFLxt3NgdSIsXVETTOZW58yNYQoVeM-QmT8bNsignpBVfU5vl0G_CA"
+    },
+    {
+      "name": "connections",
+      "seed": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+      "publicKey": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+      "method": "POST",
+      "path": "/internal/v1/connections:query",
+      "timestamp": "1800000000001",
+      "nonce": "BBBBBBBBBBBBBBBBBBBBBBBB",
+      "body": "{\"userId\":\"u1\"}",
+      "operator": "ops:a1",
+      "requestId": "req-2",
+      "targetNode": "n2",
+      "stringToSign": "POST\n/internal/v1/connections:query\n1800000000001\nBBBBBBBBBBBBBBBBBBBBBBBB\n16d1619485669b35fef8435c428d27c417eee511925a431253a8451b94e4b9e3\nops:a1\nreq-2\nn2",
+      "signature": "S2ZrR15Z0PK_4wBFmcUPSoaMVFzjhY49DvRUOMtOBRCkaOvsrmtbr06BVhzQEL-onZjQiuoi2focBKVe2v9oCg"
+    },
+    {
+      "name": "probe without operator",
+      "seed": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+      "publicKey": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+      "method": "GET",
+      "path": "/internal/v1/db",
+      "timestamp": "1800000000002",
+      "nonce": "CCCCCCCCCCCCCCCCCCCCCCCC",
+      "body": "",
+      "operator": "",
+      "requestId": "",
+      "targetNode": "n1",
+      "stringToSign": "GET\n/internal/v1/db\n1800000000002\nCCCCCCCCCCCCCCCCCCCCCCCC\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\n\nn1",
+      "signature": "rJ3zM1ONhmHE9F17jipHb89RXC4u2Q3RDqNQanlEE8e7ys118fdxi95MLSZ-AjA1PlgK2r_jIelgquZ6-dl3Cg"
+    }
+  ]
+}
