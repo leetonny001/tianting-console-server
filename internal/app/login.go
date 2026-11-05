@@ -475,6 +475,11 @@ func (c *rc) stepUpVerify() {
 		c.ok(struct{}{})
 		return
 	}
+	c.stepUpFailed()
+}
+
+// stepUpFailed：动态码错误。正文授权的当次动态码和 step-up 共用同一个失败计数（F-CON-07 规则 4）。
+func (c *rc) stepUpFailed() {
 	_ = c.event("auth.step_up", accountTarget(c.acct), nil, audit.Failure, apierr.CredentialsInvalid)
 	c.recordFailure(c.acct.Username, &c.acct)
 	var fails int

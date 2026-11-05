@@ -130,13 +130,16 @@ func newBizWorld(t *testing.T) *bizWorld {
 func newBizWorldWith(t *testing.T, admin, ws string, priv ed25519.PrivateKey) *bizWorld {
 	t.Helper()
 	proxy := newIMProxy(t, admin)
-	w := newWorld(t, map[string]string{"CON_IM_ADMIN_URL": proxy.srv.URL, "CON_IM_SIGNING_KEY": base64.StdEncoding.EncodeToString(priv.Seed())})
+	w := newWorld(t, map[string]string{"CON_IM_ADMIN_URL": proxy.srv.URL, "CON_IM_SIGNING_KEY": base64.StdEncoding.EncodeToString(priv.Seed()), "CON_IM_MSGREAD_KEY": base64.StdEncoding.EncodeToString(msgReadKey.Seed())})
 	// [C 钟] 被冻结在 2027 年并手动推进；签名时间戳要和 im-server 的真实时钟一致。
 	real, err := imclient.New(imclient.Config{BaseURL: proxy.srv.URL, Caller: "console", Key: priv, Clock: clock.New()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	w.a.IM = real
+	if w.a.MsgRead, err = imclient.New(imclient.Config{BaseURL: proxy.srv.URL, Caller: "console-msgread", Key: msgReadKey, Clock: clock.New()}); err != nil {
+		t.Fatal(err)
+	}
 	sys, err := imclient.New(imclient.Config{BaseURL: "http://" + admin, Caller: "console", Key: priv})
 	if err != nil {
 		t.Fatal(err)

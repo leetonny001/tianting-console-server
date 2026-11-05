@@ -52,6 +52,8 @@ type App struct {
 
 	Audit *audit.Writer
 	IM    *imclient.Client // 没有配置 im-server 时为 nil
+	// MsgRead 用单独的 console-msgread 凭证读正文（PRD-admin 15 节 Q-1 的默认方案）；没有配置 CON_IM_MSGREAD_KEY 时为 nil，正文接口 503。
+	MsgRead *imclient.Client
 
 	// 运维模块（PRD-ops）。都可能为 nil：没有配置时对应卡片显示"数据不可用"。
 	Nodes        *opsnode.Fleet
@@ -119,6 +121,12 @@ func New(cfg config.Config, log *slog.Logger) (*App, error) {
 		}
 		if a.IM, err = imclient.New(im); err != nil {
 			return nil, err
+		}
+		if len(cfg.IMMsgReadKey) == ed25519.PrivateKeySize {
+			im.Caller, im.Key = msgReadCaller, ed25519.PrivateKey(cfg.IMMsgReadKey)
+			if a.MsgRead, err = imclient.New(im); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return a, nil

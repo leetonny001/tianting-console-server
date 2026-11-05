@@ -1,6 +1,6 @@
 package app
 
-// businessRoutes 是管理后台第一批业务路由（PRD-admin 5.2、5.3 节）。只在管理空间注册。
+// businessRoutes 是管理后台业务路由（PRD-admin 5.2、5.3 节）。只在管理空间注册。
 func businessRoutes() []route {
 	return []route{
 		// 用户（CS-021、CS-022）
@@ -31,6 +31,15 @@ func businessRoutes() []route {
 		{method: "POST", path: "/console/api/groups/{id}/dissolve", perm: "group.dissolve", stepUp: true, action: "group.dissolve", h: (*rc).dissolveGroup},
 		// 元数据（CS-026）
 		{method: "POST", path: "/console/api/messages/meta/query", perm: "msg.meta", sensitive: true, action: "msg.meta.query", h: (*rc).queryMeta},
+		// 第二批（CS-040 ～ CS-043）
+		{method: "POST", path: "/console/api/users/{id}/ban", perm: "user.ban", stepUp: true, action: "user.ban", h: (*rc).banUser},
+		{method: "POST", path: "/console/api/users/{id}/unban", perm: "user.ban", stepUp: true, action: "user.unban", h: (*rc).unbanUser},
+		{method: "POST", path: "/console/api/mutes", perm: "mute.write", action: "mute.set", h: (*rc).setMute},
+		{method: "POST", path: "/console/api/mutes/release", perm: "mute.write", action: "mute.release", h: (*rc).releaseMute},
+		{method: "POST", path: "/console/api/messages/delete", perm: "msg.delete", stepUp: true, action: "msg.delete", h: (*rc).deleteMessages},
+		// 这两个路由的权限按请求内容再判断（grantPerm）：单聊 msg.read.c2c、隔离原文 msg.quarantine.read。
+		{method: "POST", path: "/console/api/messages/grants", perm: "msg.read.group", sensitive: true, action: "msg.read.grant", h: (*rc).createMsgGrant},
+		{method: "POST", path: "/console/api/messages/body", perm: "msg.read.group", sensitive: true, action: "msg.read.page", h: (*rc).readMessageBody},
 	}
 }
 

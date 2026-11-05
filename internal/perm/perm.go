@@ -23,15 +23,15 @@ type Space struct {
 	AuditAll   bool                // 审计员可以选"全部空间"（F-CON-09 规则 1：只有运维空间）
 }
 
-// Admin 是管理空间（第 5.2 节，第一批）。
+// Admin 是管理空间（第 5.2 节，推送的权限点随 CS-044、CS-045 加）。
 var Admin = Space{
 	Name: "admin", SuperAdmin: "super_admin", Auditor: "auditor", ManagePerm: "admin.manage", Emergency: "admin.emergency", AuditPerm: "audit.read",
 	Exclusive: []string{"auditor"}, Sensitive: []string{"moderator", "auditor", "super_admin"},
 	Roles: map[string][]string{
 		"super_admin": {"user.read", "social.read", "group.read", "admin.manage", "admin.emergency"},
 		"operator":    {"user.read", "user.import", "user.official", "social.read", "social.write", "social.settings", "group.read", "group.write", "group.owner", "group.dissolve"},
-		"support":     {"user.read", "user.kick", "user.sessions", "social.read", "group.read", "msg.meta"},
-		"moderator":   {"user.read", "user.kick", "user.sessions", "social.read", "group.read", "group.dissolve", "msg.meta"},
+		"support":     {"user.read", "user.kick", "user.sessions", "social.read", "group.read", "msg.meta", "mute.write"},
+		"moderator":   {"user.read", "user.kick", "user.sessions", "social.read", "group.read", "group.dissolve", "msg.meta", "mute.write", "user.ban", "msg.delete", "msg.read.group", "msg.read.c2c", "msg.quarantine.read"},
 		"auditor":     {"audit.read"},
 	},
 }

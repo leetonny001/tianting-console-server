@@ -27,6 +27,10 @@ type messageMeta struct {
 	Type       string `json:"type"`
 	BodyLength int    `json:"bodyLength"`
 	TS         int64  `json:"ts"`
+	// 第二批：删除标记、删除时间、删除人（im-server 的值，CS-042）。
+	Deleted   bool   `json:"deleted,omitempty"`
+	DeletedAt int64  `json:"deletedAt,omitempty"`
+	DeletedBy string `json:"deletedBy,omitempty"`
 }
 
 type metaPage struct {

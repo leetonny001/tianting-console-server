@@ -1170,6 +1170,32 @@ func TestAdminMatrix(t *testing.T) {
 		"POST /console/api/messages/meta/query": func(c *user) reply {
 			return c.do("POST", "/console/api/messages/meta/query", map[string]any{"convId": "group:" + newGroup()})
 		},
+		"POST /console/api/users/{id}/ban": func(c *user) reply {
+			return c.do("POST", "/console/api/users/"+u+"b/ban", map[string]any{"duration": "1h", "reason": "matrix test"})
+		},
+		"POST /console/api/users/{id}/unban": func(c *user) reply {
+			return c.do("POST", "/console/api/users/"+u+"b/unban", map[string]any{"reason": "matrix test"})
+		},
+		"POST /console/api/mutes": func(c *user) reply {
+			return c.do("POST", "/console/api/mutes", map[string]any{"scope": "user", "userId": u, "duration": "10m", "reason": "matrix test"})
+		},
+		"POST /console/api/mutes/release": func(c *user) reply {
+			return c.do("POST", "/console/api/mutes/release", map[string]any{"scope": "user", "userId": u, "reason": "matrix test"})
+		},
+		"POST /console/api/messages/delete": func(c *user) reply {
+			g := newGroup()
+			return c.do("POST", "/console/api/messages/delete", map[string]any{"convId": "group:" + g, "msgIds": []string{sendInto(t, b, u, g)}, "reason": "matrix test"})
+		},
+		"POST /console/api/messages/grants": func(c *user) reply {
+			b.tick() // 同一个步长的动态码不能用两次
+			return c.do("POST", "/console/api/messages/grants", map[string]any{"convId": "group:" + newGroup(), "ticket": "T-1", "reason": "matrix test", "otp": c.otp()})
+		},
+		"POST /console/api/messages/body": func(c *user) reply {
+			g := newGroup()
+			b.tick()
+			c.do("POST", "/console/api/messages/grants", map[string]any{"convId": "group:" + g, "ticket": "T-1", "reason": "matrix test", "otp": c.otp()})
+			return c.do("POST", "/console/api/messages/body", map[string]any{"convId": "group:" + g})
+		},
 	}
 	routes := app.BusinessRouteInfo()
 	if len(routes) != len(samples) {
@@ -1244,7 +1270,7 @@ func TestAdminMatrix(t *testing.T) {
 	}
 }
 
-// 5.2 节矩阵（第一批）。测试里手写一份，和 perm.Admin 互相校验：改了权限表这里要跟着改。
+// 5.2 节矩阵。测试里手写一份，和 perm.Admin 互相校验：改了权限表这里要跟着改。
 var permMatrix = map[string]map[string]bool{
 	"user.read":       {"super_admin": true, "operator": true, "support": true, "moderator": true},
 	"user.import":     {"operator": true},
@@ -1259,6 +1285,10 @@ var permMatrix = map[string]map[string]bool{
 	"group.owner":     {"operator": true},
 	"group.dissolve":  {"operator": true, "moderator": true},
 	"msg.meta":        {"support": true, "moderator": true},
+	"mute.write":      {"support": true, "moderator": true},
+	"user.ban":        {"moderator": true},
+	"msg.delete":      {"moderator": true},
+	"msg.read.group":  {"moderator": true},
 }
 
 // AC-ADM-15-7：im-server 没有注册这个接口。

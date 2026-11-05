@@ -2,6 +2,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -504,7 +505,10 @@ func startRealIM(t *testing.T) (string, ed25519.PrivateKey) {
 	return admin, priv
 }
 
-var allConsoleScopes = []string{"user.read", "user.write", "user.kick", "user.sessions", "token.issue", "group.read", "group.write", "group.dissolve", "msg.meta", "audit.read", "social.settings", "social.friends"}
+// msgReadKey 是测试里 console-msgread 的私钥。
+var msgReadKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+
+var allConsoleScopes = []string{"user.read", "user.write", "user.kick", "user.sessions", "token.issue", "group.read", "group.write", "group.dissolve", "msg.meta", "audit.read", "social.settings", "social.friends", "user.ban", "msg.delete", "mute.write"}
 
 // startRealIMWS 同时返回客户端（WebSocket）地址。
 func startRealIMWS(t *testing.T) (adminAddress, wsAddress string, key ed25519.PrivateKey) {
@@ -528,9 +532,13 @@ func startRealIMScopes(t *testing.T, scopes []string) (adminAddress, wsAddress s
 		t.Fatalf("%v: %s", err, out)
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	// 正文调用方（F-KEY-02 规则 3）：只有正文 scope，私钥由种子确定，见 msgReadKey。
 	callers, _ := json.Marshal([]map[string]any{{
 		"id": "console", "alg": "ed25519", "publicKey": base64.StdEncoding.EncodeToString(pub),
 		"scopes": scopes,
+	}, {
+		"id": "console-msgread", "alg": "ed25519", "publicKey": base64.StdEncoding.EncodeToString(msgReadKey.Public().(ed25519.PublicKey)),
+		"scopes": []string{"msg.body.group", "msg.body.c2c", "msg.quarantine"}, "bodyAccess": true,
 	}})
 	callersFile := filepath.Join(dir, "callers.json")
 	if err := os.WriteFile(callersFile, callers, 0o600); err != nil {
@@ -539,7 +547,7 @@ func startRealIMScopes(t *testing.T, scopes []string) (adminAddress, wsAddress s
 	addr, adminAddr := freeAddr(t), freeAddr(t)
 	cmd := exec.Command(bin)
 	cmd.Env = append(os.Environ(), "IM_ADDR="+addr, "IM_ADMIN_ADDR="+adminAddr, "IM_METRICS_ADDR=off", "IM_PPROF_ADDR=off", "IM_OPS_ADDR=off",
-		"IM_DB="+filepath.Join(dir, "im.db"), "IM_ADMIN_CALLERS="+callersFile)
+		"IM_DB="+filepath.Join(dir, "im.db"), "IM_ADMIN_CALLERS="+callersFile, "IM_V13_ADMIN_FEATURES=1")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
