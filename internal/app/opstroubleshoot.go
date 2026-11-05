@@ -6,10 +6,14 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"tianting/console/internal/apierr"
 	"tianting/console/internal/audit"
 	"tianting/console/internal/imclient"
+	"tianting/console/internal/notify"
 	"tianting/console/internal/opsnode"
 	"tianting/console/internal/prom"
 )
@@ -21,6 +25,8 @@ const (
 	troubleshootDaily       = 50
 	troubleshootPerMinute   = 30
 	troubleshootDisconnects = 50
+	anomalyThreshold        = 20
+	anomalyWindow           = time.Hour
 )
 
 // opsConn 是一条连接。独立类型：节点将来多返回什么也不会透传。
@@ -117,6 +123,7 @@ func (c *rc) opsTroubleshoot() {
 	c.ticket = req.Ticket
 	// 先写审计再调用节点；写失败时 audited 不会调用 fn（AC-OPS-14-4）。
 	c.audited(actionTroubleshoot, audit.NewTarget("user", req.UserID), nil, reason, func() (any, error) {
+		c.watchQueryVolume(req.UserID)
 		r, err := c.runTroubleshoot(req.UserID)
 		if err != nil {
 			return nil, err
@@ -124,6 +131,43 @@ func (c *rc) opsTroubleshoot() {
 		c.resultParams = map[string]any{"count": r.count, "partial": len(r.missing) > 0, "nodes": r.queried}
 		return opsEnvelope{Data: r.data, Partial: len(r.missing) > 0, MissingNodes: r.missing, DataTime: c.now()}, nil
 	})
+}
+
+// watchQueryVolume：同一账号 1 小时内查了 20 个不同的 userId，通知全部审计员（AC-OPS-08-14）。窗口是滑动的，
+// 通知之后 1 小时内不再发。内容只有账号名和数量，不含 userId。失败不影响这次排查：下一次查询会再判断。
+func (c *rc) watchQueryVolume(userID string) {
+	ctx := context.WithoutCancel(c.ctx)
+	now := c.now()
+	window := anomalyWindow.Milliseconds()
+	err := pgx.BeginFunc(ctx, c.a.DB, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "ops.query.watch:"+c.acct.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM biz.ops_query_recent WHERE account_id = $1::uuid AND last_at <= $2`, c.acct.ID, now-window); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO biz.ops_query_recent (account_id, user_id, last_at) VALUES ($1::uuid, $2, $3)
+			ON CONFLICT (account_id, user_id) DO UPDATE SET last_at = $3`, c.acct.ID, userID, now); err != nil {
+			return err
+		}
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM biz.ops_query_recent WHERE account_id = $1::uuid`, c.acct.ID).Scan(&n); err != nil {
+			return err
+		}
+		if n < anomalyThreshold {
+			return nil
+		}
+		tag, err := tx.Exec(ctx, `INSERT INTO biz.ops_query_anomalies (account_id, notified_at) VALUES ($1::uuid, $2)
+			ON CONFLICT (account_id) DO UPDATE SET notified_at = $2 WHERE biz.ops_query_anomalies.notified_at <= $3`, c.acct.ID, now, now-window)
+		if err != nil || tag.RowsAffected() == 0 {
+			return err
+		}
+		return c.a.notifier().ToRoles(ctx, tx, c.space.Name, []string{c.ps.Auditor}, "", notify.KindQueryAnomaly,
+			map[string]any{"who": c.acct.Username, "count": n, "at": now})
+	})
+	if err != nil {
+		c.a.Log.Error("watch query volume", "err", err, "requestId", c.requestID)
+	}
 }
 
 type troubleshootResult struct {

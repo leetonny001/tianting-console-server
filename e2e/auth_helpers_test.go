@@ -273,7 +273,7 @@ func (w *world) auditRows(where string, args ...any) []map[string]any {
 		w.t.Fatal(err)
 	}
 	defer c.Close(ctx)
-	rows, err := c.Query(ctx, `SELECT seq, phase, request_id, username, actor, ip, action, target, params, reason, result, code FROM audit.records WHERE `+where+` ORDER BY seq`, args...)
+	rows, err := c.Query(ctx, `SELECT seq, phase, request_id, username, actor, ip, action, target, params, reason, ticket, result, code FROM audit.records WHERE `+where+` ORDER BY seq`, args...)
 	if err != nil {
 		w.t.Fatal(err)
 	}

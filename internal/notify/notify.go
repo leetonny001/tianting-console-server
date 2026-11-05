@@ -23,6 +23,7 @@ const (
 	KindEmergencyGrant  = "account.emergency_grant"
 	KindAuditVerifyFail = "audit.verify_failed"
 	KindAnchorFail      = "audit.anchor_failed"
+	KindQueryAnomaly    = "ops.troubleshoot_anomaly"
 )
 
 // DB 是发通知需要的数据库接口：连接池和事务都满足。

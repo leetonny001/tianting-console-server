@@ -18,6 +18,8 @@ import (
 	"tianting/console/internal/secret"
 )
 
+const actionRoleApprove = "account.role_approve"
+
 var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 func conflict(format string, args ...any) *apierr.Error {
@@ -35,6 +37,14 @@ type accountJSON struct {
 	CreatedAt   int64    `json:"createdAt"`
 	ActivatedAt int64    `json:"activatedAt"`
 	Locked      bool     `json:"locked"`
+	// PendingRoles 是已授予、还没有第二个超管批准的角色（PRD-ops F-OPS-02 规则 6）。还没有生效，不在 Roles 里。
+	PendingRoles []pendingRoleJSON `json:"pendingRoles"`
+}
+
+type pendingRoleJSON struct {
+	Role        string `json:"role"`
+	RequestedBy string `json:"requestedBy"`
+	RequestedAt int64  `json:"requestedAt"`
 }
 
 func (c *rc) accountView(a accountRow) (accountJSON, error) {
@@ -46,7 +56,18 @@ func (c *rc) accountView(a accountRow) (accountJSON, error) {
 	if err := c.a.DB.QueryRow(c.ctx, `SELECT COALESCE(MAX(locked_until), 0) FROM auth.login_failures WHERE space = $1 AND username = $2`, a.Space, a.Username).Scan(&until); err != nil {
 		return accountJSON{}, err
 	}
-	return accountJSON{a.ID, a.Username, a.DisplayName, a.Status, roles, a.CreatedAt, a.ActivatedAt, until > c.now()}, nil
+	rows, err := c.a.DB.Query(c.ctx, `SELECT role, requested_by_name, requested_at FROM auth.role_grant_requests WHERE account_id = $1::uuid AND status = 'pending' ORDER BY role`, a.ID)
+	if err != nil {
+		return accountJSON{}, err
+	}
+	pending, err := pgx.CollectRows(rows, pgx.RowToStructByPos[pendingRoleJSON])
+	if err != nil {
+		return accountJSON{}, err
+	}
+	if pending == nil {
+		pending = []pendingRoleJSON{}
+	}
+	return accountJSON{a.ID, a.Username, a.DisplayName, a.Status, roles, a.CreatedAt, a.ActivatedAt, until > c.now(), pending}, nil
 }
 
 // listAccounts：查询带 space 条件，看不到另一个空间的账号（F-CON-02 规则 7）。
@@ -161,8 +182,9 @@ func (c *rc) createAccount() {
 		c.fail(e)
 		return
 	}
+	effective, pending := c.splitGrant(req.Roles, nil)
 	// 激活码只在响应里出现一次，不进审计。
-	c.audited("account.create", audit.NewTarget("account", req.Username), map[string]any{"roles": req.Roles}, "", func() (any, error) {
+	c.audited("account.create", audit.NewTarget("account", req.Username), map[string]any{"roles": req.Roles, "pendingRoles": pending}, "", func() (any, error) {
 		code, err := randomCode(20)
 		if err != nil {
 			return nil, err
@@ -174,7 +196,10 @@ func (c *rc) createAccount() {
 				id, c.space.Name, req.Username, req.DisplayName, secret.PepperHash(c.a.pepper(), code), now+activationTTL, now); err != nil {
 				return err
 			}
-			return insertRoles(c.ctx, tx, id, req.Roles, c.acct.Username, now)
+			if err := insertRoles(c.ctx, tx, id, effective, c.acct.Username, now); err != nil {
+				return err
+			}
+			return c.syncPending(tx, id, pending)
 		})
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -183,8 +208,8 @@ func (c *rc) createAccount() {
 		if err != nil {
 			return nil, err
 		}
-		c.notifySensitive(req.Username, req.Roles, nil)
-		return map[string]any{"id": id, "username": req.Username, "activationCode": code}, nil
+		c.notifySensitive(req.Username, req.Roles, nil, pending)
+		return map[string]any{"id": id, "username": req.Username, "activationCode": code, "pendingRoles": pending}, nil
 	})
 }
 
@@ -203,12 +228,126 @@ func insertRoles(ctx context.Context, tx pgx.Tx, id string, roles []string, by s
 	return nil
 }
 
-// notifySensitive：新获得敏感角色时通知审计员（F-CON-06 规则 5）。
-func (c *rc) notifySensitive(who string, roles, before []string) {
+// splitGrant 把请求的角色分成马上生效的和要第二个超管批准的（PRD-ops F-OPS-02 规则 6）。已经有的角色不用再批准。
+func (c *rc) splitGrant(requested, before []string) (effective, pending []string) {
+	effective, pending = []string{}, []string{}
+	for _, r := range requested {
+		if slices.Contains(c.ps.ApprovalRoles, r) && !slices.Contains(before, r) {
+			pending = append(pending, r)
+		} else {
+			effective = append(effective, r)
+		}
+	}
+	return effective, pending
+}
+
+// syncPending 让账号的待批准角色等于 pending：不再要的作废，已有的保留原发起人。
+func (c *rc) syncPending(tx pgx.Tx, accountID string, pending []string) error {
+	if len(c.ps.ApprovalRoles) == 0 {
+		return nil
+	}
+	now := c.now()
+	if _, err := tx.Exec(c.ctx, `UPDATE auth.role_grant_requests SET status = 'cancelled', decided_by = $3::uuid, decided_by_name = $4, decided_at = $5
+		WHERE account_id = $1::uuid AND status = 'pending' AND NOT role = ANY($2)`, accountID, pending, c.acct.ID, c.acct.Username, now); err != nil {
+		return err
+	}
+	for _, r := range pending {
+		if _, err := tx.Exec(c.ctx, `INSERT INTO auth.role_grant_requests (id, account_id, role, requested_by, requested_by_name, requested_at, status)
+			VALUES ($1::uuid, $2::uuid, $3, $4::uuid, $5, $6, 'pending') ON CONFLICT (account_id, role) WHERE status = 'pending' DO NOTHING`,
+			ids.New(c.a.Clock.Now()), accountID, r, c.acct.ID, c.acct.Username, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// approveRole：第二个超管批准待批准的角色（AC-OPS-02-8）。发起人自己批准 403 / 4030，留一条 denied。
+func (c *rc) approveRole() {
+	var req struct {
+		Role string `json:"role"`
+	}
+	if !c.readJSON(&req) {
+		return
+	}
+	if !slices.Contains(c.ps.ApprovalRoles, req.Role) {
+		c.fail(apierr.New(apierr.BadRequest, "this role does not need approval"))
+		return
+	}
+	a, err := c.target()
+	if err != nil {
+		c.failErr(actionRoleApprove, err)
+		return
+	}
+	if a != nil {
+		var requestedBy string
+		err := c.a.DB.QueryRow(c.ctx, `SELECT requested_by::text FROM auth.role_grant_requests WHERE account_id = $1::uuid AND role = $2 AND status = 'pending'`, a.ID, req.Role).Scan(&requestedBy)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			c.failErr(actionRoleApprove, err)
+			return
+		}
+		if requestedBy == c.acct.ID || a.ID == c.acct.ID {
+			c.denied = audit.NewTarget("account", a.Username)
+			c.a.recordDenied(c, actionRoleApprove)
+			c.fail(&apierr.Error{Code: apierr.Forbidden, Msg: "another super admin must approve this grant", Reason: "ownGrant"})
+			return
+		}
+	}
+	c.withTarget(actionRoleApprove, "", map[string]any{"role": req.Role}, func(a accountRow) (any, error) {
+		var requestedByName string
+		err := pgx.BeginFunc(c.ctx, c.a.DB, func(tx pgx.Tx) error {
+			if err := c.spaceLock(tx); err != nil {
+				return err
+			}
+			var requestID, status string
+			err := tx.QueryRow(c.ctx, `SELECT r.id::text, r.requested_by_name, a.status FROM auth.role_grant_requests r JOIN auth.accounts a ON a.id = r.account_id
+				WHERE r.account_id = $1::uuid AND r.role = $2 AND r.status = 'pending' FOR UPDATE OF r`, a.ID, req.Role).Scan(&requestID, &requestedByName, &status)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return conflict("no pending grant for this role")
+			}
+			if err != nil {
+				return err
+			}
+			if status == "disabled" {
+				return conflict("the account is disabled")
+			}
+			rows, err := tx.Query(c.ctx, `SELECT role FROM auth.account_roles WHERE account_id = $1::uuid`, a.ID)
+			if err != nil {
+				return err
+			}
+			roles, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				return err
+			}
+			if c.ps.RolesConflict(append(roles, req.Role)) {
+				return conflict("this role cannot be combined with other roles")
+			}
+			if err := insertRoles(c.ctx, tx, a.ID, []string{req.Role}, c.acct.Username, c.now()); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(c.ctx, `UPDATE auth.role_grant_requests SET status = 'approved', decided_by = $2::uuid, decided_by_name = $3, decided_at = $4 WHERE id = $1::uuid`,
+				requestID, c.acct.ID, c.acct.Username, c.now()); err != nil {
+				return err
+			}
+			return revokeAll(c.ctx, tx, a.ID, "") // 角色变化：重新登录后按新角色（F-CON-05 规则 4）
+		})
+		if err != nil {
+			return nil, err
+		}
+		c.resultParams = map[string]any{"role": req.Role, "requestedBy": requestedByName}
+		c.notifySensitive(a.Username, []string{req.Role}, nil, nil)
+		return map[string]any{"role": req.Role}, nil
+	})
+}
+
+// notifySensitive：新获得敏感角色时通知审计员（F-CON-06 规则 5）。pending 是其中还没生效的。
+func (c *rc) notifySensitive(who string, roles, before, pending []string) {
 	for _, r := range roles {
 		if slices.Contains(c.ps.Sensitive, r) && !slices.Contains(before, r) {
-			if err := c.a.notifier().ToRoles(context.WithoutCancel(c.ctx), c.a.DB, c.space.Name, []string{c.ps.Auditor}, "", notify.KindSensitiveRole,
-				map[string]any{"who": who, "role": r, "by": c.acct.Username, "at": c.now()}); err != nil {
+			payload := map[string]any{"who": who, "role": r, "by": c.acct.Username, "at": c.now()}
+			if slices.Contains(pending, r) {
+				payload["pending"] = true
+			}
+			if err := c.a.notifier().ToRoles(context.WithoutCancel(c.ctx), c.a.DB, c.space.Name, []string{c.ps.Auditor}, "", notify.KindSensitiveRole, payload); err != nil {
 				c.a.Log.Error("notify sensitive role", "err", err)
 			}
 		}
@@ -291,6 +430,9 @@ func (c *rc) setRoles() {
 		if err != nil {
 			return nil, err
 		}
+		effective, pending := c.splitGrant(req.Roles, before)
+		// 只是多了一个待批准的角色时，实际权限没变，会话不用失效。
+		unchanged := len(pending) > 0 && slices.Equal(effective, slices.Sorted(slices.Values(before)))
 		err = pgx.BeginFunc(c.ctx, c.a.DB, func(tx pgx.Tx) error {
 			if err := c.spaceLock(tx); err != nil {
 				return err
@@ -303,16 +445,23 @@ func (c *rc) setRoles() {
 			if _, err := tx.Exec(c.ctx, `DELETE FROM auth.account_roles WHERE account_id = $1::uuid`, a.ID); err != nil {
 				return err
 			}
-			if err := insertRoles(c.ctx, tx, a.ID, req.Roles, c.acct.Username, c.now()); err != nil {
+			if err := insertRoles(c.ctx, tx, a.ID, effective, c.acct.Username, c.now()); err != nil {
 				return err
+			}
+			if err := c.syncPending(tx, a.ID, pending); err != nil {
+				return err
+			}
+			if unchanged {
+				return nil
 			}
 			return revokeAll(c.ctx, tx, a.ID, "") // 重新登录后按新角色（F-CON-05 规则 4）
 		})
 		if err != nil {
 			return nil, err
 		}
-		c.notifySensitive(a.Username, req.Roles, before)
-		return map[string]any{"roles": req.Roles}, nil
+		c.resultParams = map[string]any{"roles": effective, "pendingRoles": pending}
+		c.notifySensitive(a.Username, req.Roles, before, pending)
+		return map[string]any{"roles": effective, "pendingRoles": pending}, nil
 	})
 }
 

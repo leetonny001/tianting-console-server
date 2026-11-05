@@ -95,8 +95,8 @@ func (c *rc) auditSpaces(want string) ([]string, bool) {
 }
 
 // auditDenied：越权查询另一个空间也要留痕。
-func (c *rc) auditDenied() {
-	c.a.recordDenied(c, actionAuditQuery)
+func (c *rc) auditDenied(action string) {
+	c.a.recordDenied(c, action)
 	c.fail(apierr.New(apierr.Forbidden, "permission denied"))
 }
 
@@ -114,14 +114,60 @@ func parseInt(s string) (int64, bool) {
 	return n, err == nil
 }
 
-func (c *rc) auditQuery() {
-	q := c.r.URL.Query()
-	from, ok1 := parseInt(q.Get("from"))
-	to, ok2 := parseInt(q.Get("to"))
+// auditFilter 是查询和导出共用的筛选条件（F-CON-09 规则 2）。
+type auditFilter struct {
+	where   []string
+	args    []any
+	filters map[string]any
+}
+
+func (f *auditFilter) add(cond string, v any) {
+	f.args = append(f.args, v)
+	f.where = append(f.where, strings.ReplaceAll(cond, "?", "$"+strconv.Itoa(len(f.args))))
+}
+
+func (f *auditFilter) sql() string { return strings.Join(f.where, " AND ") }
+
+// parseAuditFilter 校验筛选条件。失败时已经写好响应，越权的空间按 action 留痕。
+func (c *rc) parseAuditFilter(get func(string) string, action string) (*auditFilter, bool) {
+	from, ok1 := parseInt(get("from"))
+	to, ok2 := parseInt(get("to"))
 	if !ok1 || !ok2 || from > to || to-from > auditMaxSpan.Milliseconds() {
 		c.fail(apierr.New(apierr.BadRequest, "from and to (ms) are required, from <= to, and the range must be at most 31 days"))
-		return
+		return nil, false
 	}
+	switch get("result") {
+	case "", audit.Success, audit.Failure, audit.Denied, audit.Unknown:
+	default:
+		c.fail(apierr.New(apierr.BadRequest, "invalid result"))
+		return nil, false
+	}
+	spaces, ok := c.auditSpaces(get("space"))
+	if !ok {
+		c.auditDenied(action)
+		return nil, false
+	}
+	f := &auditFilter{where: []string{"ts >= $1", "ts <= $2", "space = ANY($3)"}, args: []any{from, to, spaces}, filters: map[string]any{"from": from, "to": to, "space": get("space")}}
+	for param, cond := range map[string]string{"actor": "actor = ?", "action": "action = ?", "result": "result = ?", "requestId": "request_id = ?"} {
+		if v := get(param); v != "" {
+			f.add(cond, v)
+			f.filters[param] = truncate(v, 128)
+		}
+	}
+	if v := get("target"); v != "" {
+		t := map[string]any{"ids": []string{v}}
+		if typ, id, found := strings.Cut(v, ":"); found {
+			t = map[string]any{"type": typ, "ids": []string{id}}
+		}
+		raw, _ := json.Marshal(t)
+		f.add("target::jsonb @> ?::jsonb", string(raw))
+		f.filters["target"] = truncate(v, 128)
+	}
+	return f, true
+}
+
+func (c *rc) auditQuery() {
+	q := c.r.URL.Query()
 	limit := 50
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -140,49 +186,20 @@ func (c *rc) auditQuery() {
 		}
 		cursor = n
 	}
-	switch q.Get("result") {
-	case "", audit.Success, audit.Failure, audit.Denied, audit.Unknown:
-	default:
-		c.fail(apierr.New(apierr.BadRequest, "invalid result"))
-		return
-	}
-	spaces, ok := c.auditSpaces(q.Get("space"))
+	f, ok := c.parseAuditFilter(q.Get, actionAuditQuery)
 	if !ok {
-		c.auditDenied()
 		return
-	}
-
-	where := []string{"ts >= $1", "ts <= $2", "space = ANY($3)"}
-	args := []any{from, to, spaces}
-	add := func(cond string, v any) {
-		args = append(args, v)
-		where = append(where, strings.ReplaceAll(cond, "?", "$"+strconv.Itoa(len(args))))
-	}
-	filters := map[string]any{"from": from, "to": to, "space": q.Get("space")}
-	for param, cond := range map[string]string{"actor": "actor = ?", "action": "action = ?", "result": "result = ?", "requestId": "request_id = ?"} {
-		if v := q.Get(param); v != "" {
-			add(cond, v)
-			filters[param] = truncate(v, 128)
-		}
-	}
-	if v := q.Get("target"); v != "" {
-		t := map[string]any{"ids": []string{v}}
-		if typ, id, found := strings.Cut(v, ":"); found {
-			t = map[string]any{"type": typ, "ids": []string{id}}
-		}
-		raw, _ := json.Marshal(t)
-		add("target::jsonb @> ?::jsonb", string(raw))
-		filters["target"] = truncate(v, 128)
 	}
 	if cursor > 0 {
-		add("seq < ?", cursor)
-		filters["cursor"] = cursor
+		f.add("seq < ?", cursor)
+		f.filters["cursor"] = cursor
 	}
+	where, args, filters := f.sql(), f.args, f.filters
 	if !c.auditEvent(filters) {
 		return
 	}
 	args = append(args, limit+1)
-	rows, err := c.a.DB.Query(c.ctx, `SELECT `+audit.StoredColumns+` FROM audit.records WHERE `+strings.Join(where, " AND ")+` ORDER BY seq DESC LIMIT $`+strconv.Itoa(len(args)), args...)
+	rows, err := c.a.DB.Query(c.ctx, `SELECT `+audit.StoredColumns+` FROM audit.records WHERE `+where+` ORDER BY seq DESC LIMIT $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		c.failErr("audit query", err)
 		return
@@ -254,7 +271,7 @@ func (c *rc) auditRequest() {
 	id := c.r.PathValue("requestId")
 	spaces, ok := c.auditSpaces(c.r.URL.Query().Get("space"))
 	if !ok {
-		c.auditDenied()
+		c.auditDenied(actionAuditQuery)
 		return
 	}
 	if !c.auditEvent(map[string]any{"requestId": truncate(id, 128), "space": c.r.URL.Query().Get("space")}) {
@@ -305,7 +322,7 @@ func (c *rc) auditIM() {
 	}
 	spaces, ok := c.auditSpaces(c.r.URL.Query().Get("space"))
 	if !ok {
-		c.auditDenied()
+		c.auditDenied(actionAuditQuery)
 		return
 	}
 	if !c.auditEvent(map[string]any{"requestId": truncate(id, 128), "im": true}) {

@@ -60,7 +60,7 @@ func every(ctx context.Context, d time.Duration, active *atomic.Bool, f func()) 
 	}
 }
 
-func stepLoad(super *user, phaseFile string, accounts int) {
+func stepLoad(super, approver *user, phaseFile string, accounts int) {
 	section(fmt.Sprintf("AC-OPS-90-1、90-2：%d 个账号的运维流量，由 %s 控制开关段", accounts, phaseFile))
 	if r := super.do("POST", "/console/api/auth/step-up", map[string]any{"otp": super.otp()}); r.status != 200 {
 		fail("step-up: %d %s", r.status, r.raw)
@@ -68,7 +68,7 @@ func stepLoad(super *user, phaseFile string, accounts int) {
 	}
 	var engineers []*user
 	for i := range accounts {
-		e, err := super.create(fmt.Sprintf("loadeng%02d", i+1), "ops_engineer")
+		e, err := super.createEngineer(approver, fmt.Sprintf("loadeng%02d", i+1))
 		if err != nil {
 			fail("%v", err)
 			return

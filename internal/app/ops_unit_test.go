@@ -29,9 +29,15 @@ func TestOpsRoutesMatchYAML(t *testing.T) {
 	}
 }
 
-// AC-OPS-05-4、CS-110 内容 3：节点相关接口只读；没有备份、恢复路径。
+// AC-OPS-05-4、CS-110 内容 3：节点相关接口只读；没有备份、恢复路径。写接口只有告警静默，都要重新验证（F-OPS-18）。
 func TestOpsRoutesReadOnly(t *testing.T) {
 	for _, r := range opsRoutes() {
+		if strings.HasPrefix(r.path, opsPrefix+"/silences") {
+			if !r.stepUp || r.perm != "ops.silence.write" {
+				t.Errorf("silence route: %+v", r)
+			}
+			continue
+		}
 		if r.method != "GET" && r.path != opsPrefix+"/troubleshoot/query" && r.path != opsPrefix+"/grafana/ticket" {
 			t.Errorf("write route: %s %s", r.method, r.path)
 		}
@@ -192,5 +198,52 @@ func TestDisconnectSummary(t *testing.T) {
 	}
 	if s := disconnectSummary(nil); s["serverClosedMajority"] != false {
 		t.Errorf("empty = %v", s)
+	}
+}
+
+func TestCSVCell(t *testing.T) {
+	for in, want := range map[string]string{
+		"": "", "abc": "abc", "a=b": "a=b", "10.0.0.1": "10.0.0.1", `{"ids":["u"]}`: `{"ids":["u"]}`, "   ": "   ",
+		"=1": "'=1", "+1": "'+1", "-1": "'-1", "@a": "'@a", "\t1": "'\t1", "\r1": "'\r1", "\n1": "'\n1",
+		" =1": "' =1", "\u3000+1": "'\u3000+1", "＝1": "'＝1", "＋1": "'＋1", "－1": "'－1", "＠1": "'＠1",
+	} {
+		if got := csvCell(in); got != want {
+			t.Errorf("csvCell(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCheckSilenceMatchers(t *testing.T) {
+	yes, no := true, false
+	good := [][]silenceMatcher{
+		{{Name: "alertname", Value: "节点不可达"}},
+		{{Name: "alertname", Value: "5xxx错误率高"}, {Name: "node_id", Value: "n1"}},
+		{{Name: "alertname", Value: "疑似GC风暴", IsRegex: &no, IsEqual: &yes}},
+	}
+	for _, in := range good {
+		out, e := checkSilenceMatchers(in)
+		if e != nil {
+			t.Errorf("%+v: %v", in, e)
+			continue
+		}
+		for _, m := range out {
+			if m.IsRegex || !m.IsEqual {
+				t.Errorf("not an equality matcher: %+v", m)
+			}
+		}
+	}
+	bad := [][]silenceMatcher{
+		nil, {},
+		{{Name: "alertname", Value: ".*"}}, {{Name: "alertname", Value: "a|b"}}, {{Name: "alertname", Value: "a+"}}, {{Name: "alertname", Value: "[a]"}},
+		{{Name: "alertname", Value: ""}}, {{Name: "alertname", Value: " a"}}, {{Name: "alertname", Value: "a "}},
+		{{Name: "alertname", Value: "a", IsRegex: &yes}}, {{Name: "alertname", Value: "a", IsEqual: &no}},
+		{{Name: "node_id", Value: "n1 n2"}}, {{Name: "severity", Value: "critical"}},
+		{{Name: "alertname", Value: "a"}, {Name: "alertname", Value: "b"}},
+		{{Name: "alertname", Value: strings.Repeat("a", 129)}},
+	}
+	for _, in := range bad {
+		if _, e := checkSilenceMatchers(in); e == nil {
+			t.Errorf("%+v accepted", in)
+		}
 	}
 }

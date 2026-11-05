@@ -153,12 +153,7 @@ func (c *rc) opsOverview() {
 		put("disconnects", map[string]any{"handshake": topCodes(hs, 0, nil), "sessionTop3": topCodes(ss, 3, nil)})
 	})
 	run(func(ctx context.Context) {
-		alerts, err := c.a.Alertmanager.Alerts(ctx)
-		if err != nil {
-			put("alerts", cardDown("Alertmanager"))
-			return
-		}
-		put("alerts", map[string]any{"list": alerts})
+		put("alerts", c.a.alertsCard(ctx))
 	})
 	run(func(ctx context.Context) {
 		b, err := c.a.backups(ctx)
@@ -173,10 +168,19 @@ func (c *rc) opsOverview() {
 }
 
 func (c *rc) opsAlerts() {
-	alerts, err := c.a.Alertmanager.Alerts(c.ctx)
+	c.opsOK(c.a.alertsCard(c.ctx), nil)
+}
+
+// alertsCard 是告警卡片：正在触发的告警和生效的静默（F-OPS-18 规则 4）。
+// 静默读不到时单独标"不可用"：不能让人以为没有静默，也不能因此丢了告警。
+func (a *App) alertsCard(ctx context.Context) any {
+	alerts, err := a.Alertmanager.Alerts(ctx)
 	if err != nil {
-		c.opsOK(cardDown("Alertmanager"), nil)
-		return
+		return cardDown("Alertmanager")
 	}
-	c.opsOK(map[string]any{"list": alerts}, nil)
+	silences, err := a.Alertmanager.Silences(ctx)
+	if err != nil {
+		return map[string]any{"list": alerts, "silences": cardDown("Alertmanager")}
+	}
+	return map[string]any{"list": alerts, "silences": silences}
 }

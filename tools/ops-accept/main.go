@@ -188,6 +188,39 @@ func (u *user) create(name string, roles ...string) (*user, error) {
 	return c, c.activate(code)
 }
 
+// stepUp 重新验证（5 分钟有效）。
+func (u *user) stepUp() error {
+	if r := u.do("POST", "/console/api/auth/step-up", map[string]any{"otp": u.otp()}); r.status != 200 {
+		return fmt.Errorf("step-up %s: %d %s", u.name, r.status, r.raw)
+	}
+	return nil
+}
+
+// createEngineer 新建排障账号：u 授予，approver（第二个超管）批准，然后激活（AC-OPS-02-8）。
+// 先批准再激活：批准会让这个账号的会话失效，激活之后再批准要多等一个动态码步长。
+func (u *user) createEngineer(approver *user, name string) (*user, error) {
+	r := u.do("POST", "/console/api/accounts", map[string]any{"username": name, "displayName": name, "roles": []string{"ops_engineer"}})
+	if r.status != 200 {
+		return nil, fmt.Errorf("create %s: %d %s", name, r.status, r.raw)
+	}
+	id, _ := r.body["id"].(string)
+	code, _ := r.body["activationCode"].(string)
+	path := "/console/api/accounts/" + id + "/roles/approve"
+	body := map[string]any{"role": "ops_engineer"}
+	a := approver.do("POST", path, body)
+	if a.status == 403 && strings.Contains(a.raw, "4038") {
+		if err := approver.stepUp(); err != nil {
+			return nil, err
+		}
+		a = approver.do("POST", path, body)
+	}
+	if a.status != 200 {
+		return nil, fmt.Errorf("approve %s: %d %s", name, a.status, a.raw)
+	}
+	c := &user{name: name}
+	return c, c.activate(code)
+}
+
 // ---------------------------------------------------------------------------
 // im-server 一侧：真实的用户和连接
 
@@ -701,6 +734,158 @@ func stepPausedNode(ctx context.Context, u *user) {
 	check(len(missing) == 1 && missing[0] == "n2", "标出未响应的节点", r.body["missingNodes"])
 }
 
+// amSilences 直接问真实的 Alertmanager（只监听回环，在容器里问）。
+func amSilences() ([]map[string]any, error) {
+	out, err := run("compose", "exec", "-T", "alertmanager", "wget", "-qO-", "http://127.0.0.1:9093/api/v2/silences")
+	if err != nil {
+		return nil, fmt.Errorf("%v: %s", err, out)
+	}
+	var list []map[string]any
+	return list, json.Unmarshal([]byte(out), &list)
+}
+
+// nodeDownNotified：t 之后 webhook 有没有收到 n1 的"节点不可达"。
+func nodeDownNotified(since int64) (bool, error) {
+	out, err := run("notifications")
+	if err != nil {
+		return false, fmt.Errorf("%v: %s", err, out)
+	}
+	var rows []struct {
+		ReceivedAtMs int64 `json:"receivedAtMs"`
+		Payload      struct {
+			Alerts []struct {
+				Status string            `json:"status"`
+				Labels map[string]string `json:"labels"`
+			} `json:"alerts"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		return false, err
+	}
+	for _, r := range rows {
+		if r.ReceivedAtMs < since {
+			continue
+		}
+		for _, a := range r.Payload.Alerts {
+			if a.Status == "firing" && a.Labels["alertname"] == "节点不可达" && a.Labels["node_id"] == "n1" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// AC-OPS-18-1、18-2、18-3：真实的 Alertmanager。约 4 分钟。n1 会被 kill -9，结束时重启。
+func stepSilence(eng *user) {
+	section("AC-OPS-18-1～18-3：经 console-server 在真实 Alertmanager 上静默，kill -9 n1 后 3 分钟内 webhook 没有通知")
+	const path = opsAPI + "/silences"
+	body := map[string]any{
+		"matchers":        []map[string]any{{"name": "alertname", "value": "节点不可达"}, {"name": "node_id", "value": "n1"}},
+		"durationMinutes": 60, "ticket": "CS-1024", "reason": "testenv 静默验收",
+	}
+	if r := eng.do("POST", path, body); !check(r.status == 403 && strings.Contains(r.raw, "4038"), "未重新验证返回 4038", r.status, r.raw) {
+		return
+	}
+	if err := eng.stepUp(); err != nil {
+		fail("%v", err)
+		return
+	}
+	before, err := amSilences()
+	if err != nil {
+		fail("%v", err)
+		return
+	}
+	for name, b := range map[string]map[string]any{
+		"匹配条件为空": {"matchers": []any{}, "durationMinutes": 60, "ticket": "CS-1024", "reason": "testenv 静默验收"},
+		"正则":     {"matchers": []map[string]any{{"name": "alertname", "value": ".*", "isRegex": true}}, "durationMinutes": 60, "ticket": "CS-1024", "reason": "testenv 静默验收"},
+		"25 小时":  {"matchers": []map[string]any{{"name": "alertname", "value": "节点不可达"}}, "durationMinutes": 25 * 60, "ticket": "CS-1024", "reason": "testenv 静默验收"},
+	} {
+		r := eng.do("POST", path, b)
+		check(r.status == 400 && strings.Contains(r.raw, "4000"), name+"返回 4000", r.status, r.raw)
+	}
+	after, err := amSilences()
+	if err != nil || !check(len(after) == len(before), "Alertmanager 没有新静默", len(before), len(after)) {
+		return
+	}
+	r := eng.do("POST", path, body)
+	if !check(r.status == 200, "创建静默", r.status, r.raw) {
+		return
+	}
+	id, _ := r.data()["id"].(string)
+	silences, err := amSilences()
+	if err != nil {
+		fail("%v", err)
+		return
+	}
+	found := false
+	for _, s := range silences {
+		if s["id"] == id {
+			found = true
+			check(s["createdBy"] == eng.name && s["comment"] == "CS-1024", "Alertmanager 里 createdBy 是账号名，comment 是工单号", s)
+		}
+	}
+	check(found, "Alertmanager 里有这条静默", id)
+	if out, err := run("compose", "exec", "-T", "postgres", "psql", "-At", "-U", "console_owner", "-d", "console", "-c",
+		"select count(*) from audit.records where action='ops.silence.create' and phase='result' and result='success'"); err != nil || strings.TrimSpace(out) != "1" {
+		fail("审计没有 ops.silence.create: %v %s", err, out)
+	} else {
+		ok("审计新增 ops.silence.create")
+	}
+
+	since := time.Now().UnixMilli()
+	mustRun("kill", "n1")
+	defer func() {
+		mustRun("start", "n1")
+		probe()
+	}()
+	// 要先证明告警确实触发了，"没有收到通知"才有意义。
+	firing := waitFor(170*time.Second, func() bool {
+		out, err := run("query", `ALERTS{alertname="节点不可达",node_id="n1",alertstate="firing"}`)
+		return err == nil && strings.Contains(out, "节点不可达")
+	})
+	check(firing, "Prometheus 里节点不可达已经触发")
+	if wait := time.Until(time.UnixMilli(since).Add(3 * time.Minute)); wait > 0 {
+		time.Sleep(wait)
+	}
+	notified, err := nodeDownNotified(since)
+	if err != nil {
+		fail("%v", err)
+		return
+	}
+	check(!notified, "webhook 3 分钟内没有收到节点不可达")
+	card := sub(eng.do("GET", opsAPI+"/overview", nil).data(), "alerts")
+	shown := false
+	for _, x := range list(card, "silences") {
+		m, _ := x.(map[string]any)
+		if m["id"] == id {
+			shown = m["createdBy"] == eng.name && m["endsAt"] != ""
+		}
+	}
+	check(shown, "总览告警卡片显示静默、创建人、到期时间", card)
+	for _, x := range list(card, "list") {
+		m, _ := x.(map[string]any)
+		check(!(m["name"] == "节点不可达" && m["node"] == "n1"), "告警卡片不列被静默的告警", m)
+	}
+
+	if err := eng.stepUp(); err != nil {
+		fail("%v", err)
+		return
+	}
+	r = eng.do("POST", path+"/"+id+":expire", map[string]any{"ticket": "CS-1024", "reason": "testenv 静默验收"})
+	check(r.status == 200, "提前结束", r.status, r.raw)
+	silences, err = amSilences()
+	if err != nil {
+		fail("%v", err)
+		return
+	}
+	for _, s := range silences {
+		if s["id"] == id {
+			state, _ := s["status"].(map[string]any)
+			check(state["state"] == "expired", "Alertmanager 里已结束", s)
+		}
+	}
+}
+
 // 放在最后：时钟推进之后不再恢复，环境随后就销毁。
 func stepVersion31(u *user) {
 	section("AC-OPS-04-6：版本不一致超过 30 分钟")
@@ -723,7 +908,7 @@ func main() {
 	flag.StringVar(&tt, "tt", "", "deploy/testenv/tt 的路径")
 	flag.StringVar(&code, "code", "", "运维空间第一个超管的激活码（tt bootstrap 的输出）")
 	flag.StringVar(&keyFile, "admin-key-file", "", "im-server 的 IM_ADMIN_KEY 所在文件")
-	flag.StringVar(&steps, "steps", "nodes,overview,alerts,backups,grafana,configdb,troubleshoot,paused,version", "要跑的步骤")
+	flag.StringVar(&steps, "steps", "nodes,overview,alerts,backups,grafana,configdb,troubleshoot,paused,silence,version", "要跑的步骤")
 	flag.IntVar(&samples, "samples", 300, "AC-OPS-90-3 的排查次数")
 	var phaseFile string
 	var accounts int
@@ -749,9 +934,18 @@ func main() {
 		fmt.Println("FAIL: step-up:", r.status, r.raw)
 		os.Exit(1)
 	}
+	super2, err := super.create("accsuper2", "ops_superadmin")
+	if err != nil {
+		fmt.Println("FAIL:", err)
+		os.Exit(1)
+	}
+	if err := super2.stepUp(); err != nil {
+		fmt.Println("FAIL:", err)
+		os.Exit(1)
+	}
 	var engineers []*user
 	for _, name := range []string{"acceng1", "acceng2", "acceng3"} {
-		e, err := super.create(name, "ops_engineer")
+		e, err := super.createEngineer(super2, name)
 		if err != nil {
 			fmt.Println("FAIL:", err)
 			os.Exit(1)
@@ -764,7 +958,7 @@ func main() {
 	want := strings.Split(steps, ",")
 	on := func(s string) bool { return slices.Contains(want, s) }
 	if on("load") {
-		stepLoad(super, phaseFile, accounts)
+		stepLoad(super, super2, phaseFile, accounts)
 	}
 	if on("nodes") {
 		stepNodes(eng)
@@ -790,6 +984,9 @@ func main() {
 	}
 	if on("paused") {
 		stepPausedNode(ctx, eng)
+	}
+	if on("silence") {
+		stepSilence(eng)
 	}
 	if on("version") {
 		stepVersion31(eng)

@@ -23,8 +23,9 @@ const opsPrefix = "/console/api/ops/v1"
 
 func opsRoutes() []route {
 	const (
-		view = "ops.overview.read"
-		conf = "ops.config.read"
+		view    = "ops.overview.read"
+		conf    = "ops.config.read"
+		silence = "ops.silence.write"
 	)
 	return []route{
 		{method: "GET", path: opsPrefix + "/overview", perm: view, h: (*rc).opsOverview},
@@ -35,6 +36,8 @@ func opsRoutes() []route {
 		{method: "GET", path: opsPrefix + "/db", perm: conf, h: (*rc).opsDB},
 		{method: "GET", path: opsPrefix + "/backups", perm: conf, h: (*rc).opsBackups},
 		{method: "POST", path: opsPrefix + "/grafana/ticket", perm: view, action: actionGrafanaEnter, h: (*rc).opsGrafanaTicket},
+		{method: "POST", path: opsPrefix + "/silences", perm: silence, stepUp: true, action: actionSilenceCreate, h: (*rc).opsSilenceCreate},
+		{method: "POST", path: opsPrefix + "/silences/{id}:expire", pattern: opsPrefix + "/silences/{id}", perm: silence, stepUp: true, action: actionSilenceExpire, h: (*rc).opsSilenceExpire},
 	}
 }
 
@@ -112,11 +115,11 @@ func (c *rc) requireFleet() bool {
 	return true
 }
 
-// registerMethodGuards：运维接口只读。其他方法显式回 405，不依赖默认行为（AC-OPS-10-7）。
+// registerMethodGuards：其他方法显式回 405，不依赖默认行为（AC-OPS-10-7）。
 func registerMethodGuards(mux *http.ServeMux, rs []route) {
 	allowed := map[string][]string{}
 	for _, r := range rs {
-		allowed[r.path] = append(allowed[r.path], r.method)
+		allowed[r.muxPath()] = append(allowed[r.muxPath()], r.method)
 	}
 	for path, methods := range allowed {
 		for _, m := range []string{"GET", "POST", "PUT", "PATCH", "DELETE"} {

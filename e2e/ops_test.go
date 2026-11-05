@@ -48,6 +48,7 @@ func TestOpsMatrix(t *testing.T) {
 		"ops.overview.read": {"viewer": true, "engineer": true},
 		"ops.config.read":   {"viewer": true, "engineer": true},
 		"ops.troubleshoot":  {"engineer": true},
+		"ops.silence.write": {"engineer": true},
 	}
 	users := map[string]*user{"viewer": o.viewer, "engineer": o.engineer, "auditor": o.auditor, "super": o.super}
 	body := map[string]any{"userId": "u1", "ticket": "CS-1024", "reason": "用户反馈掉线"}
@@ -61,8 +62,17 @@ func TestOpsMatrix(t *testing.T) {
 		if s.Method == "POST" {
 			b = body
 		}
+		if s.StepUp {
+			o.advance(6 * time.Minute) // 上一条接口的重新验证过期
+		}
 		for name, u := range users {
 			r := u.do(s.Method, opsAPI+s.Path, b)
+			if allowed[name] && s.StepUp {
+				// 有权限但没有重新验证：403 / 4038。验证之后才进入接口。
+				expect(t, s.Path+" before step-up", r, 403, 4038)
+				u.stepUp()
+				r = u.do(s.Method, opsAPI+s.Path, b)
+			}
 			if allowed[name] {
 				if r.status == 403 {
 					t.Errorf("%s %s as %s = 403", s.Method, s.Path, name)

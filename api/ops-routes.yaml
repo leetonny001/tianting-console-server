@@ -8,3 +8,5 @@
 - {method: GET, path: /db, perm: ops.config.read, audit: "", stepUp: false, batch: 1}
 - {method: GET, path: /backups, perm: ops.config.read, audit: "", stepUp: false, batch: 1}
 - {method: POST, path: /grafana/ticket, perm: ops.overview.read, audit: ops.grafana.enter, stepUp: false, batch: 1}
+- {method: POST, path: /silences, perm: ops.silence.write, audit: ops.silence.create, stepUp: true, batch: 2}
+- {method: POST, path: "/silences/{id}:expire", perm: ops.silence.write, audit: ops.silence.expire, stepUp: true, batch: 2}

@@ -22,15 +22,24 @@ import (
 // route 是一个 /console/api/* 路由。perm 必须显式声明（权限点或 perm.LoginOnly）；公开路由必须显式写 public。
 type route struct {
 	method, path string
-	perm         string
-	public       bool // 不需要会话：登录、激活
-	allowSetup   bool // setup 会话也能调用
-	stepUp       bool // 需要 5 分钟内 step-up
-	sensitive    bool // 带理由的敏感查询：必须 POST（CS-020 内容 3），userId 和理由不进 URL
+	// pattern 是注册到 ServeMux 的模式，只有 path 没法直接注册时才写（ServeMux 的通配符必须占满一段，/silences/{id}:expire 注册不了）。
+	pattern    string
+	perm       string
+	public     bool // 不需要会话：登录、激活
+	allowSetup bool // setup 会话也能调用
+	stepUp     bool // 需要 5 分钟内 step-up
+	sensitive  bool // 带理由的敏感查询：必须 POST（CS-020 内容 3），userId 和理由不进 URL
 	// deniedTarget 让越权记录也带上目标（AC-OPS-02-5）。
 	deniedTarget func(*rc) audit.Target
 	action       string
 	h            func(*rc)
+}
+
+func (rt route) muxPath() string {
+	if rt.pattern != "" {
+		return rt.pattern
+	}
+	return rt.path
 }
 
 // rc 是一次请求的上下文。
@@ -117,8 +126,12 @@ func (a *App) apiRoutes(ps perm.Space) []route {
 		{method: "POST", path: "/console/api/accounts/{id}/reset", perm: manage, stepUp: true, action: "account.reset", h: (*rc).resetAccount},
 		{method: "POST", path: "/console/api/accounts/{id}/unlock", perm: manage, stepUp: true, action: "account.unlock", h: (*rc).unlockAccount},
 	}
+	if len(ps.ApprovalRoles) > 0 {
+		rs = append(rs, route{method: "POST", path: "/console/api/accounts/{id}/roles/approve", perm: manage, stepUp: true, action: actionRoleApprove, h: (*rc).approveRole})
+	}
 	rs = append(rs,
 		route{method: "GET", path: auditPath, perm: ps.AuditPerm, action: actionAuditQuery, h: (*rc).auditQuery},
+		route{method: "POST", path: auditExportPath, perm: ps.AuditPerm, stepUp: true, sensitive: true, action: auditExportAction(ps), h: (*rc).auditExport},
 		route{method: "GET", path: auditRequestPath, perm: ps.AuditPerm, action: actionAuditQuery, h: (*rc).auditRequest},
 		route{method: "GET", path: auditIMPath, perm: ps.AuditPerm, action: actionAuditQuery, h: (*rc).auditIM},
 	)
@@ -152,7 +165,7 @@ func (a *App) apiMux(s space.Space) *http.ServeMux {
 	mux := http.NewServeMux()
 	for _, rt := range a.apiRoutes(ps) {
 		checkRoute(rt)
-		mux.HandleFunc(rt.method+" "+rt.path, a.serve(rt, s, ps))
+		mux.HandleFunc(rt.method+" "+rt.muxPath(), a.serve(rt, s, ps))
 	}
 	// 账号不能删除（F-CON-02 规则 5、AC-CON-02-11）。下面的兜底路由匹配所有方法，所以这里要显式写。
 	mux.HandleFunc("DELETE /console/api/accounts/{id}", func(w http.ResponseWriter, _ *http.Request) {
@@ -170,6 +183,12 @@ func (a *App) apiMux(s space.Space) *http.ServeMux {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 			})
 		}
+	}
+	for _, method := range []string{"GET", "PUT", "PATCH", "DELETE"} {
+		mux.HandleFunc(method+" "+auditExportPath, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Allow", "POST")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		})
 	}
 	mux.HandleFunc("/console/api/", func(w http.ResponseWriter, r *http.Request) {
 		// 还没实现的业务接口也要先过会话：未登录的请求是 401，不暴露路由是否存在。
