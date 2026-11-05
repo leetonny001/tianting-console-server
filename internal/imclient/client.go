@@ -42,6 +42,9 @@ type Config struct {
 	HTTP    *http.Client
 	// Latency 是测试模式的人为延迟（毫秒，CS-001 的 imLatencyMs）；生产环境为 nil。
 	Latency *atomic.Int64
+	// DropResponse 是测试模式的 imDropResponse（PRD-live 8.2 节）：写请求正常发出、im-server 处理完之后丢弃响应，
+	// 按连接中断处理。只读查询不受影响：对账要靠它们。生产环境为 nil。
+	DropResponse *atomic.Bool
 }
 
 // Client 是签名客户端。
@@ -71,10 +74,18 @@ type Call struct {
 	RequestID string // console 审计的 requestId；拆批时为 {requestId}.{批号}
 }
 
+// RawBody 是已经序列化好的请求体，原样发送、原样签名。
+// json.Marshal 会把 < > & 转义成 \u003c，字节数变多；推送的 4KB 上限按字节算，不能让两边的长度不一致。
+type RawBody []byte
+
 // Do 发送请求，把 2xx 响应解到 out（可以为 nil）。非 2xx 返回 *apierr.Error，错误码原样透传。
 func (cl *Client) Do(ctx context.Context, call Call, method, path string, query url.Values, body, out any) error {
 	var raw []byte
-	if body != nil {
+	switch b := body.(type) {
+	case nil:
+	case RawBody:
+		raw = b
+	default:
 		var err error
 		if raw, err = json.Marshal(body); err != nil {
 			return err
@@ -139,10 +150,11 @@ func (cl *Client) Do(ctx context.Context, call Call, method, path string, query 
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return ErrResultUnknown
-		}
-		return fmt.Errorf("read im-server response: %w", err)
+		// 响应读到一半断了：im-server 已经开始回应，操作很可能已经生效。
+		return fmt.Errorf("%w: read response: %w", ErrResultUnknown, err)
+	}
+	if cl.c.DropResponse != nil && cl.c.DropResponse.Load() && method != http.MethodGet {
+		return fmt.Errorf("%w: response dropped by the test fault", ErrResultUnknown)
 	}
 	if resp.StatusCode >= 300 {
 		var e apierr.Error

@@ -19,6 +19,7 @@ import (
 	"filippo.io/age"
 
 	"tianting/console/internal/opsnode"
+	"tianting/console/internal/pushtpl"
 	"tianting/console/internal/secret"
 	"tianting/console/internal/space"
 )
@@ -49,10 +50,12 @@ type Config struct {
 	IMSigningKey secret.Bytes // Ed25519 私钥（64 字节）
 	IMMsgReadKey secret.Bytes
 	IMTimeout    time.Duration
-	Anchor       AnchorConfig
-	Archive      ArchiveConfig
-	Ops          OpsConfig
-	Argon        secret.ArgonParams
+	// PushTemplates 是系统通知模板（CON_PUSH_TEMPLATES）。没有配置时为 nil：不能发通知。
+	PushTemplates *pushtpl.Set
+	Anchor        AnchorConfig
+	Archive       ArchiveConfig
+	Ops           OpsConfig
+	Argon         secret.ArgonParams
 	// DisableLockout 关闭账号锁定和 IP 限流，只在测试模式下有效（AC-CON-03-3 的时序测试）。
 	DisableLockout bool
 }
@@ -295,6 +298,13 @@ func Load(getenv func(string) string) (cfg Config, problems []string) {
 			bad("CON_IM_TIMEOUT is not a valid duration")
 		}
 		cfg.IMTimeout = d
+	}
+	if path := getenv("CON_PUSH_TEMPLATES"); path != "" {
+		set, err := pushtpl.Load(path)
+		if err != nil {
+			bad("CON_PUSH_TEMPLATES: %v", err)
+		}
+		cfg.PushTemplates = set
 	}
 	cfg.Argon = secret.DefaultArgon
 	for key, dst := range map[string]*uint32{"CON_ARGON_MEMORY_KIB": &cfg.Argon.MemoryKiB, "CON_ARGON_TIME": &cfg.Argon.Time} {

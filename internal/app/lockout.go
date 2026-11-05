@@ -185,6 +185,9 @@ func (a *App) Housekeeping(ctx context.Context) error {
 		{`DELETE FROM biz.msg_grants WHERE expires_at < $1`, now},
 		{`DELETE FROM biz.grafana_tickets WHERE expires_at < $1`, now},
 		{`DELETE FROM biz.grafana_sessions WHERE created_at < $1`, now - 2*absoluteTimeout.Milliseconds()},
+		// 发送记录和审计同样保留：在线 1 年 + 归档年限（F-ADM-50 规则 7）。
+		{`DELETE FROM biz.push_records WHERE sent_at < $1`, now - a.pushRetention().Milliseconds()},
+		{`DELETE FROM biz.push_drafts WHERE created_at < $1`, now - a.pushRetention().Milliseconds()},
 	} {
 		if _, err := a.DB.Exec(ctx, q.sql, q.arg); err != nil {
 			return err

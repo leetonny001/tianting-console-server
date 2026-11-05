@@ -47,8 +47,9 @@ type App struct {
 	dbOK     atomic.Int64 // 上次确认数据库可用的时间（Unix 毫秒），1 秒内不重复 ping
 
 	// 测试模式的故障注入（CS-001 内容 8）。
-	auditFault  atomic.Value // string
-	IMLatencyMs atomic.Int64
+	auditFault     atomic.Value // string
+	IMLatencyMs    atomic.Int64
+	IMDropResponse atomic.Bool
 
 	Audit *audit.Writer
 	IM    *imclient.Client // 没有配置 im-server 时为 nil
@@ -118,6 +119,7 @@ func New(cfg config.Config, log *slog.Logger) (*App, error) {
 		im := imclient.Config{BaseURL: cfg.IMAdminURL, Caller: cfg.IMCaller, Key: ed25519.PrivateKey(cfg.IMSigningKey), Timeout: cfg.IMTimeout, Clock: a.Clock}
 		if cfg.TestMode {
 			im.Latency = &a.IMLatencyMs
+			im.DropResponse = &a.IMDropResponse
 		}
 		if a.IM, err = imclient.New(im); err != nil {
 			return nil, err
@@ -237,12 +239,15 @@ func (a *App) registerTestRoutes(mux *http.ServeMux) {
 		var req struct {
 			AuditWrite  string `json:"auditWrite"` // "fail"、"failResult"、"ok"
 			IMLatencyMs int64  `json:"imLatencyMs"`
+			// IMDropResponse：im-server 处理完，console 收不到响应（PRD-live 8.2 节，AC-PUSH-06-6）。
+			IMDropResponse bool `json:"imDropResponse"`
 		}
 		if !readJSON(w, r, &req) {
 			return
 		}
 		a.auditFault.Store(req.AuditWrite)
 		a.IMLatencyMs.Store(req.IMLatencyMs)
+		a.IMDropResponse.Store(req.IMDropResponse)
 		w.WriteHeader(http.StatusOK)
 	})
 }

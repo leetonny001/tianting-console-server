@@ -59,6 +59,9 @@ func (a *App) imAudit(ctx context.Context, operator, requestID string, from, to 
 
 // localOnlyAction：im-server 的管理审计里查不到的动作（改 console 自己的库，或走运维接口的只读查询），没法靠它判断结果。
 func localOnlyAction(action string) bool {
+	if action == actionPushRequest { // 全员草稿只写 console 自己的库
+		return true
+	}
 	for _, p := range []string{"account.", "auth.", "audit.", "ops."} {
 		if strings.HasPrefix(action, p) {
 			return true
@@ -110,6 +113,13 @@ func (a *App) Reconcile(ctx context.Context) error {
 			}
 			continue
 		}
+		if err := a.pushConclude(ctx, in, result, code); err != nil {
+			a.Log.Warn("push conclude skipped", "requestId", in.RequestID, "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
 		rec := audit.Record{
 			Space: in.Space, Phase: audit.PhaseResult, RequestID: in.RequestID, AccountID: in.AccountID, Username: in.Username, Actor: in.Actor, IP: in.IP, UA: in.UA,
 			Action: in.Action, Reason: in.Reason, Ticket: in.Ticket, Result: result, Code: code, Params: map[string]any{"reconciled": marker},
@@ -119,6 +129,10 @@ func (a *App) Reconcile(ctx context.Context) error {
 		if err := a.Audit.Write(ctx, rec); err != nil {
 			return err
 		}
+	}
+	// 放在最后：这一轮判出来要重放的马上执行（PRD-live 4.7 节）。
+	if err := a.replayPushes(ctx, now); err != nil && firstErr == nil {
+		firstErr = err
 	}
 	return firstErr
 }

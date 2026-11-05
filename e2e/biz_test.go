@@ -1196,6 +1196,26 @@ func TestAdminMatrix(t *testing.T) {
 			c.do("POST", "/console/api/messages/grants", map[string]any{"convId": "group:" + g, "ticket": "T-1", "reason": "matrix test", "otp": c.otp()})
 			return c.do("POST", "/console/api/messages/body", map[string]any{"convId": "group:" + g})
 		},
+		"GET /console/api/push/templates": func(c *user) reply { return c.do("GET", "/console/api/push/templates", nil) },
+		"POST /console/api/push/targets/validate": func(c *user) reply {
+			return c.upload("/console/api/push/targets/validate", "userId\n"+u+"\n", nil)
+		},
+		"POST /console/api/push/preview": func(c *user) reply {
+			return c.do("POST", "/console/api/push/preview", map[string]any{"target": "user", "userIds": []string{u}, "type": "notice", "data": matrixNotice})
+		},
+		"POST /console/api/push/user": func(c *user) reply {
+			return c.do("POST", "/console/api/push/user", map[string]any{"userIds": []string{u}, "type": "notice", "data": matrixNotice, "reason": "matrix test"})
+		},
+		"GET /console/api/push/all/drafts": func(c *user) reply { return c.do("GET", "/console/api/push/all/drafts", nil) },
+		"POST /console/api/push/all/drafts": func(c *user) reply {
+			return c.do("POST", "/console/api/push/all/drafts", map[string]any{"type": "notice", "data": matrixNotice, "reason": "matrix test"})
+		},
+		"GET /console/api/push/all/drafts/pending": func(c *user) reply { return c.do("GET", "/console/api/push/all/drafts/pending", nil) },
+		"POST /console/api/push/all/drafts/{id}/approve": func(c *user) reply {
+			d := roles["operator"].do("POST", "/console/api/push/all/drafts", map[string]any{"type": "notice", "data": matrixNotice, "reason": "matrix test"})
+			return c.do("POST", "/console/api/push/all/drafts/"+d.str("draftId")+"/approve", map[string]any{"confirmText": "全员发送"})
+		},
+		"GET /console/api/push/records": func(c *user) reply { return c.do("GET", "/console/api/push/records", nil) },
 	}
 	routes := app.BusinessRouteInfo()
 	if len(routes) != len(samples) {
@@ -1271,24 +1291,30 @@ func TestAdminMatrix(t *testing.T) {
 }
 
 // 5.2 节矩阵。测试里手写一份，和 perm.Admin 互相校验：改了权限表这里要跟着改。
+var matrixNotice = map[string]any{"title": "matrix", "text": "matrix"}
+
 var permMatrix = map[string]map[string]bool{
-	"user.read":       {"super_admin": true, "operator": true, "support": true, "moderator": true},
-	"user.import":     {"operator": true},
-	"user.kick":       {"support": true, "moderator": true},
-	"user.sessions":   {"support": true, "moderator": true},
-	"user.official":   {"operator": true},
-	"social.read":     {"super_admin": true, "operator": true, "support": true, "moderator": true},
-	"social.write":    {"operator": true},
-	"social.settings": {"operator": true},
-	"group.read":      {"super_admin": true, "operator": true, "support": true, "moderator": true},
-	"group.write":     {"operator": true},
-	"group.owner":     {"operator": true},
-	"group.dissolve":  {"operator": true, "moderator": true},
-	"msg.meta":        {"support": true, "moderator": true},
-	"mute.write":      {"support": true, "moderator": true},
-	"user.ban":        {"moderator": true},
-	"msg.delete":      {"moderator": true},
-	"msg.read.group":  {"moderator": true},
+	"user.read":         {"super_admin": true, "operator": true, "support": true, "moderator": true},
+	"user.import":       {"operator": true},
+	"user.kick":         {"support": true, "moderator": true},
+	"user.sessions":     {"support": true, "moderator": true},
+	"user.official":     {"operator": true},
+	"social.read":       {"super_admin": true, "operator": true, "support": true, "moderator": true},
+	"social.write":      {"operator": true},
+	"social.settings":   {"operator": true},
+	"group.read":        {"super_admin": true, "operator": true, "support": true, "moderator": true},
+	"group.write":       {"operator": true},
+	"group.owner":       {"operator": true},
+	"group.dissolve":    {"operator": true, "moderator": true},
+	"msg.meta":          {"support": true, "moderator": true},
+	"mute.write":        {"support": true, "moderator": true},
+	"user.ban":          {"moderator": true},
+	"msg.delete":        {"moderator": true},
+	"msg.read.group":    {"moderator": true},
+	"push.user":         {"operator": true},
+	"push.all.request":  {"operator": true},
+	"push.all.approve":  {"super_admin": true},
+	"push.records.read": {"super_admin": true, "auditor": true},
 }
 
 // AC-ADM-15-7：im-server 没有注册这个接口。

@@ -508,7 +508,7 @@ func startRealIM(t *testing.T) (string, ed25519.PrivateKey) {
 // msgReadKey 是测试里 console-msgread 的私钥。
 var msgReadKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
 
-var allConsoleScopes = []string{"user.read", "user.write", "user.kick", "user.sessions", "token.issue", "group.read", "group.write", "group.dissolve", "msg.meta", "audit.read", "social.settings", "social.friends", "user.ban", "msg.delete", "mute.write"}
+var allConsoleScopes = []string{"user.read", "user.write", "user.kick", "user.sessions", "token.issue", "group.read", "group.write", "group.dissolve", "msg.meta", "audit.read", "social.settings", "social.friends", "user.ban", "msg.delete", "mute.write", "push.user", "push.all"}
 
 // startRealIMWS 同时返回客户端（WebSocket）地址。
 func startRealIMWS(t *testing.T) (adminAddress, wsAddress string, key ed25519.PrivateKey) {
@@ -516,6 +516,23 @@ func startRealIMWS(t *testing.T) (adminAddress, wsAddress string, key ed25519.Pr
 }
 
 func startRealIMScopes(t *testing.T, scopes []string) (adminAddress, wsAddress string, key ed25519.PrivateKey) {
+	t.Helper()
+	p := startIMProc(t, scopes)
+	return p.admin, p.ws, p.key
+}
+
+// imProc 是一个真实的 im-server 进程。同样的地址和库可以重启（AC-PUSH-06-15）。
+type imProc struct {
+	t         *testing.T
+	admin, ws string
+	key       ed25519.PrivateKey
+	bin       string
+	env       []string
+	cmd       *exec.Cmd
+	exited    chan struct{}
+}
+
+func startIMProc(t *testing.T, scopes []string, extraEnv ...string) *imProc {
 	t.Helper()
 	src := os.Getenv("TIANTING_SERVER_DIR")
 	if src == "" {
@@ -533,9 +550,10 @@ func startRealIMScopes(t *testing.T, scopes []string) (adminAddress, wsAddress s
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	// 正文调用方（F-KEY-02 规则 3）：只有正文 scope，私钥由种子确定，见 msgReadKey。
+	// 持有 push.all 必须配 pushTypes（PRD-live F-PUSH-09 规则 3），和 deploy/push-templates.example.json 的 type 一致。
 	callers, _ := json.Marshal([]map[string]any{{
 		"id": "console", "alg": "ed25519", "publicKey": base64.StdEncoding.EncodeToString(pub),
-		"scopes": scopes,
+		"scopes": scopes, "pushTypes": []string{"notice", "activity"},
 	}, {
 		"id": "console-msgread", "alg": "ed25519", "publicKey": base64.StdEncoding.EncodeToString(msgReadKey.Public().(ed25519.PublicKey)),
 		"scopes": []string{"msg.body.group", "msg.body.c2c", "msg.quarantine"}, "bodyAccess": true,
@@ -545,28 +563,52 @@ func startRealIMScopes(t *testing.T, scopes []string) (adminAddress, wsAddress s
 		t.Fatal(err)
 	}
 	addr, adminAddr := freeAddr(t), freeAddr(t)
-	cmd := exec.Command(bin)
-	cmd.Env = append(os.Environ(), "IM_ADDR="+addr, "IM_ADMIN_ADDR="+adminAddr, "IM_METRICS_ADDR=off", "IM_PPROF_ADDR=off", "IM_OPS_ADDR=off",
-		"IM_DB="+filepath.Join(dir, "im.db"), "IM_ADMIN_CALLERS="+callersFile, "IM_V13_ADMIN_FEATURES=1")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	p := &imProc{t: t, admin: adminAddr, ws: addr, key: priv, bin: bin}
+	p.env = append(os.Environ(), "IM_ADDR="+addr, "IM_ADMIN_ADDR="+adminAddr, "IM_METRICS_ADDR=off", "IM_PPROF_ADDR=off", "IM_OPS_ADDR=off",
+		"IM_DB="+filepath.Join(dir, "im.db"), "IM_ADMIN_CALLERS="+callersFile, "IM_V13_ADMIN_FEATURES=1", "IM_PUSH_ENABLED=1")
+	p.env = append(p.env, extraEnv...)
+	p.start()
 	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		_ = p.cmd.Process.Kill()
+		<-p.exited
 	})
+	return p
+}
+
+func (p *imProc) start() {
+	p.t.Helper()
+	cmd := exec.Command(p.bin)
+	cmd.Env = p.env
+	if err := cmd.Start(); err != nil {
+		p.t.Fatal(err)
+	}
+	p.cmd, p.exited = cmd, make(chan struct{})
+	exited := p.exited
+	go func() {
+		_ = cmd.Wait()
+		close(exited)
+	}()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if c, err := net.DialTimeout("tcp", adminAddr, 100*time.Millisecond); err == nil {
+		if c, err := net.DialTimeout("tcp", p.admin, 100*time.Millisecond); err == nil {
 			c.Close()
-			break
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("im-server did not start")
+			p.t.Fatal("im-server did not start")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return adminAddr, addr, priv
+}
+
+// waitExit 等进程自己退出（故障注入）。
+func (p *imProc) waitExit() {
+	p.t.Helper()
+	select {
+	case <-p.exited:
+	case <-time.After(10 * time.Second):
+		p.t.Fatal("im-server did not exit")
+	}
 }
 
 func TestSignedCallToRealIMServer(t *testing.T) {

@@ -39,6 +39,8 @@ type world struct {
 	owner string
 	db    *pgxpool.Pool
 	logs  *syncBuf
+	// onClock 在 [C 钟] 推进后调用：对账测试要让 [IM 钟] 一起走。
+	onClock func(time.Time)
 }
 
 func newWorld(t *testing.T, extra map[string]string) *world {
@@ -76,6 +78,9 @@ func newWorld(t *testing.T, extra map[string]string) *world {
 func (w *world) advance(d time.Duration) {
 	w.now = w.now.Add(d)
 	w.a.Clock.Freeze(w.now)
+	if w.onClock != nil {
+		w.onClock(w.now)
+	}
 }
 
 // tick 换到下一个 TOTP 步长（同一步长的码不能用两次）。
@@ -128,7 +133,10 @@ func (u *user) do(method, path string, body any, mutate ...func(*http.Request)) 
 	u.w.t.Helper()
 	var rd io.Reader
 	if body != nil {
-		raw, _ := json.Marshal(body)
+		raw, isRaw := body.([]byte) // 已经序列化好的（和浏览器的 JSON.stringify 一样不转义 < > &）
+		if !isRaw {
+			raw, _ = json.Marshal(body)
+		}
 		rd = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequest(method, u.srv.URL+path, rd)

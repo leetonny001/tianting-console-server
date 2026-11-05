@@ -1,0 +1,23 @@
+{
+  "notice": {
+    "type": "object",
+    "title": "系统公告",
+    "required": ["title", "text"],
+    "additionalProperties": false,
+    "properties": {
+      "title": { "type": "string", "title": "标题", "minLength": 1, "maxLength": 64 },
+      "text": { "type": "string", "title": "正文", "minLength": 1, "maxLength": 1000 }
+    }
+  },
+  "activity": {
+    "type": "object",
+    "title": "活动通知",
+    "required": ["title", "url"],
+    "additionalProperties": false,
+    "properties": {
+      "title": { "type": "string", "title": "标题", "minLength": 1, "maxLength": 64 },
+      "url": { "type": "string", "title": "跳转地址", "pattern": "^https://", "maxLength": 512 },
+      "endAt": { "type": "integer", "title": "结束时间（毫秒）", "minimum": 0 }
+    }
+  }
+}

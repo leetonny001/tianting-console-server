@@ -153,3 +153,53 @@ func TestKeyHandling(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// imDropResponse（PRD-live 8.2 节）：请求发出去了、服务端处理完了，调用方拿到的是"结果未知"。只读查询不受影响。
+func TestDropResponseFault(t *testing.T) {
+	var drop atomic.Bool
+	drop.Store(true)
+	var calls atomic.Int32
+	cl := newClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}, func(c *Config) { c.DropResponse = &drop })
+	err := cl.Do(context.Background(), Call{}, "POST", "/admin/push", nil, map[string]any{}, nil)
+	if !errors.Is(err, ErrResultUnknown) || calls.Load() != 1 {
+		t.Errorf("err = %v, calls = %d", err, calls.Load())
+	}
+	if err := cl.Do(context.Background(), Call{}, "GET", "/admin/audit", nil, nil, nil); err != nil {
+		t.Errorf("read while dropping: %v", err)
+	}
+	drop.Store(false)
+	if err := cl.Do(context.Background(), Call{}, "POST", "/admin/push", nil, map[string]any{}, nil); err != nil {
+		t.Errorf("after clearing: %v", err)
+	}
+}
+
+// 响应读到一半断了：不知道结果，不能当成失败。
+func TestTruncatedResponseIsUnknown(t *testing.T) {
+	cl := newClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		_, _ = w.Write([]byte(`{"partial"`))
+	}, func(*Config) {})
+	err := cl.Do(context.Background(), Call{}, "POST", "/admin/push", nil, map[string]any{}, nil)
+	if !errors.Is(err, ErrResultUnknown) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// RawBody 原样发送、原样签名：< 不被转义，字节数不变。
+func TestRawBodyIsSentAsIs(t *testing.T) {
+	const body = `{"data":{"text":"<&>"}}`
+	var got string
+	cl := newClient(t, func(_ http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		got = string(raw)
+	}, func(*Config) {})
+	if err := cl.Do(context.Background(), Call{}, "POST", "/admin/push", nil, RawBody(body), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got != body {
+		t.Errorf("body = %s", got)
+	}
+}

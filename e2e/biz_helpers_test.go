@@ -45,6 +45,12 @@ func newIMProxy(t *testing.T, adminAddr string) *imProxy {
 	target, _ := url.Parse("http://" + adminAddr)
 	p := &imProxy{}
 	rp := httputil.NewSingleHostReverseProxy(target)
+	// im-server 中途退出：console 看到的是连接断开，不是一个 502（直连时就是这样）。
+	rp.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
+		if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+	}
 	rp.ModifyResponse = func(r *http.Response) error {
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -130,7 +136,7 @@ func newBizWorld(t *testing.T) *bizWorld {
 func newBizWorldWith(t *testing.T, admin, ws string, priv ed25519.PrivateKey) *bizWorld {
 	t.Helper()
 	proxy := newIMProxy(t, admin)
-	w := newWorld(t, map[string]string{"CON_IM_ADMIN_URL": proxy.srv.URL, "CON_IM_SIGNING_KEY": base64.StdEncoding.EncodeToString(priv.Seed()), "CON_IM_MSGREAD_KEY": base64.StdEncoding.EncodeToString(msgReadKey.Seed())})
+	w := newWorld(t, map[string]string{"CON_IM_ADMIN_URL": proxy.srv.URL, "CON_IM_SIGNING_KEY": base64.StdEncoding.EncodeToString(priv.Seed()), "CON_IM_MSGREAD_KEY": base64.StdEncoding.EncodeToString(msgReadKey.Seed()), "CON_PUSH_TEMPLATES": "../deploy/push-templates.example.json"})
 	// [C 钟] 被冻结在 2027 年并手动推进；签名时间戳要和 im-server 的真实时钟一致。
 	real, err := imclient.New(imclient.Config{BaseURL: proxy.srv.URL, Caller: "console", Key: priv, Clock: clock.New()})
 	if err != nil {

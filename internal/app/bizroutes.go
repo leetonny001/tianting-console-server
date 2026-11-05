@@ -40,6 +40,16 @@ func businessRoutes() []route {
 		// 这两个路由的权限按请求内容再判断（grantPerm）：单聊 msg.read.c2c、隔离原文 msg.quarantine.read。
 		{method: "POST", path: "/console/api/messages/grants", perm: "msg.read.group", sensitive: true, action: "msg.read.grant", h: (*rc).createMsgGrant},
 		{method: "POST", path: "/console/api/messages/body", perm: "msg.read.group", sensitive: true, action: "msg.read.page", h: (*rc).readMessageBody},
+		// 系统通知（CS-044、CS-045）
+		{method: "GET", path: "/console/api/push/templates", perm: "push.user", h: (*rc).listPushTemplates},
+		{method: "POST", path: "/console/api/push/targets/validate", perm: "push.user", h: (*rc).validatePushTargets},
+		{method: "POST", path: "/console/api/push/preview", perm: "push.user", h: (*rc).previewPush},
+		{method: "POST", path: "/console/api/push/user", perm: "push.user", action: actionPushUser, h: (*rc).pushToUsers},
+		{method: "GET", path: "/console/api/push/all/drafts", perm: "push.all.request", h: (*rc).listMyDrafts},
+		{method: "POST", path: "/console/api/push/all/drafts", perm: "push.all.request", action: actionPushRequest, h: (*rc).createPushDraft},
+		{method: "GET", path: "/console/api/push/all/drafts/pending", perm: "push.all.approve", h: (*rc).listPendingDrafts},
+		{method: "POST", path: "/console/api/push/all/drafts/{id}/approve", perm: "push.all.approve", stepUp: true, action: actionPushApprove, h: (*rc).approvePushDraft},
+		{method: "GET", path: "/console/api/push/records", perm: "push.records.read", h: (*rc).listPushRecords},
 	}
 }
 

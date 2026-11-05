@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -123,5 +124,30 @@ func TestConfigDoesNotPrintSecrets(t *testing.T) {
 				t.Errorf("printed config contains %s", secret)
 			}
 		}
+	}
+}
+
+func TestPushTemplates(t *testing.T) {
+	load := func(path string) []string {
+		_, problems := Load(func(k string) string {
+			if k == "CON_PUSH_TEMPLATES" {
+				return path
+			}
+			return ""
+		})
+		return problems
+	}
+	if p := load("../../deploy/push-templates.example.json"); len(p) != 0 {
+		t.Errorf("example: %v", p)
+	}
+	if p := load("/nonexistent/templates.json"); len(p) != 1 || !strings.Contains(p[0], "CON_PUSH_TEMPLATES") {
+		t.Errorf("missing file: %v", p)
+	}
+	bad := t.TempDir() + "/t.json"
+	if err := os.WriteFile(bad, []byte(`{"notice":{"type":"object","oneOf":[]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if p := load(bad); len(p) != 1 || !strings.Contains(p[0], "CON_PUSH_TEMPLATES") {
+		t.Errorf("unsupported keyword: %v", p)
 	}
 }
