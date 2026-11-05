@@ -3,6 +3,8 @@ package app
 // businessRoutes 是管理后台业务路由（PRD-admin 5.2、5.3 节）。只在管理空间注册。
 func businessRoutes() []route {
 	return []route{
+		// 数据概览（CS-060）：只读、不写审计。首页的定时刷新带 X-Console-Background，不续期会话（CS-009）。
+		{method: "GET", path: "/console/api/stats", perm: "stats.read", h: (*rc).getStats},
 		// 用户（CS-021、CS-022）
 		{method: "GET", path: "/console/api/users", perm: "user.read", h: (*rc).listUsers},
 		{method: "POST", path: "/console/api/users/import/validate", perm: "user.import", h: (*rc).validateUsers},

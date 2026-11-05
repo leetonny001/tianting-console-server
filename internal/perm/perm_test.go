@@ -34,6 +34,7 @@ func TestAdminMatrix(t *testing.T) {
 		"push.all.request":    {"operator"},
 		"push.all.approve":    {"super_admin"},
 		"push.records.read":   {"super_admin", "auditor"},
+		"stats.read":          {"super_admin", "operator"},
 	} {
 		var got []string
 		for r := range Admin.Roles {

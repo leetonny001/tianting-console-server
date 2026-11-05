@@ -1096,6 +1096,7 @@ func TestAdminMatrix(t *testing.T) {
 		return g
 	}
 	samples := map[string]func(*user) reply{
+		"GET /console/api/stats": func(c *user) reply { return c.do("GET", "/console/api/stats", nil) },
 		"GET /console/api/users": func(c *user) reply { return c.do("GET", "/console/api/users?q="+u, nil) },
 		"POST /console/api/users/import/validate": func(c *user) reply {
 			return c.upload("/console/api/users/import/validate", usersCSV(next("i")+",,"), nil)
@@ -1315,6 +1316,7 @@ var permMatrix = map[string]map[string]bool{
 	"push.all.request":  {"operator": true},
 	"push.all.approve":  {"super_admin": true},
 	"push.records.read": {"super_admin": true, "auditor": true},
+	"stats.read":        {"super_admin": true, "operator": true},
 }
 
 // AC-ADM-15-7：im-server 没有注册这个接口。

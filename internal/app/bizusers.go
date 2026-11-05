@@ -8,6 +8,9 @@ import (
 	"tianting/console/internal/audit"
 )
 
+// getStats 代理 GET /admin/stats（G-ADM-17）。B6 之前在线连接数只覆盖接收请求的节点（partial、scope），原样给页面标注。
+func (c *rc) getStats() { c.imRead("/admin/stats", nil) }
+
 // CS-021：用户。
 
 func (c *rc) listUsers() {

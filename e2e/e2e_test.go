@@ -508,7 +508,7 @@ func startRealIM(t *testing.T) (string, ed25519.PrivateKey) {
 // msgReadKey 是测试里 console-msgread 的私钥。
 var msgReadKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
 
-var allConsoleScopes = []string{"user.read", "user.write", "user.kick", "user.sessions", "token.issue", "group.read", "group.write", "group.dissolve", "msg.meta", "audit.read", "social.settings", "social.friends", "user.ban", "msg.delete", "mute.write", "push.user", "push.all"}
+var allConsoleScopes = []string{"user.read", "user.write", "user.kick", "user.sessions", "token.issue", "group.read", "group.write", "group.dissolve", "msg.meta", "audit.read", "social.settings", "social.friends", "user.ban", "msg.delete", "mute.write", "push.user", "push.all", "stats.read"}
 
 // startRealIMWS 同时返回客户端（WebSocket）地址。
 func startRealIMWS(t *testing.T) (adminAddress, wsAddress string, key ed25519.PrivateKey) {

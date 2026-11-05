@@ -37,6 +37,10 @@ go test -race ./...
 - 对账：每 10 分钟补写缺失的结论。只改 console 自己数据库的动作（`account.*`、`auth.*`、`audit.*`）im-server 查不到，补写 `result=unknown`、`params.reconciled="localOnly"`，不会声称"没有执行"。
 - `tools/minio-test.sh` 用真实的 MinIO（Object Lock）跑一遍读写权限，需要 docker，CI 里运行。
 
+## 管理后台数据概览
+
+`GET /console/api/stats` 代理 im-server 的 `GET /admin/stats`（调用方要有 scope `stats.read`），不写审计。B6 之前 `online.partial=true`、`online.scope=localNode`：连接数只覆盖接收请求的节点，不是集群总数。
+
 ## 运维模块
 
 接口清单是 `api/ops-routes.yaml`，启动时和注册的路由比对，不一致就启动失败；权限矩阵测试用它做数据源。节点凭证、Prometheus、Alertmanager、备份桶、Grafana 的配置见 `deploy/console-server.env.example`。
