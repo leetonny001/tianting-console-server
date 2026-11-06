@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -64,6 +65,9 @@ func check(cond bool, label string, a ...any) bool {
 	}
 	return cond
 }
+
+// activationCodeRe 是命令行输出里的激活码：20 位 base32。
+var activationCodeRe = regexp.MustCompile(`[A-Z2-7]{20}`)
 
 func section(s string) { fmt.Printf("== %s\n", s) }
 
@@ -934,8 +938,15 @@ func main() {
 		fmt.Println("FAIL: step-up:", r.status, r.raw)
 		os.Exit(1)
 	}
-	super2, err := super.create("accsuper2", "ops_superadmin")
-	if err != nil {
+	// 第二个超管只能走命令行：网页上授予超管也要第二个人批准（AC-OPS-01-19、PRD-ops F-OPS-02 规则 6）。
+	out, err := run("bootstrap", "accsuper2")
+	code2 := activationCodeRe.FindString(out)
+	if err != nil || code2 == "" {
+		fmt.Printf("FAIL: tt bootstrap accsuper2: %v\n%s\n", err, out)
+		os.Exit(1)
+	}
+	super2 := &user{name: "accsuper2"}
+	if err := super2.activate(code2); err != nil {
 		fmt.Println("FAIL:", err)
 		os.Exit(1)
 	}

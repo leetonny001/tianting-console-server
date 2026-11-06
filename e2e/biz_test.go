@@ -1171,6 +1171,10 @@ func TestAdminMatrix(t *testing.T) {
 		"POST /console/api/messages/meta/query": func(c *user) reply {
 			return c.do("POST", "/console/api/messages/meta/query", map[string]any{"convId": "group:" + newGroup()})
 		},
+		"POST /console/api/users/convs/query": func(c *user) reply {
+			return c.do("POST", "/console/api/users/convs/query", map[string]any{"userId": u, "reason": "matrix test"})
+		},
+		"GET /console/api/users/{id}/groups": func(c *user) reply { return c.do("GET", "/console/api/users/"+u+"/groups", nil) },
 		"POST /console/api/users/{id}/ban": func(c *user) reply {
 			return c.do("POST", "/console/api/users/"+u+"b/ban", map[string]any{"duration": "1h", "reason": "matrix test"})
 		},

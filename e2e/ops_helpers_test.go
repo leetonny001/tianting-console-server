@@ -246,7 +246,7 @@ func newOpsWorld(t *testing.T, nodes ...*imNode) *opsWorld {
 		o.a.Nodes = f
 	}
 	o.super = o.opsSuper("osuper")
-	o.super2nd = o.super.create("osuper2", "ops_superadmin")
+	o.super2nd = o.opsSuper("osuper2") // 第二个超管只能走命令行（AC-OPS-01-19），否则没有人能批准
 	o.engineer = o.createEngineer("oeng1")
 	o.viewer = o.super.create("oview1", "ops_viewer")
 	o.auditor = o.super.create("oaud1", "ops_auditor")

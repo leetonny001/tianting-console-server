@@ -258,6 +258,7 @@ func (a *App) RunJobs(ctx context.Context) {
 		case <-t.C:
 			now := a.Clock.Now()
 			logErr("housekeeping", a.Housekeeping(ctx))
+			logErr("role grant expiry", a.ExpireRoleGrants(ctx)) // 只是让审计及时：过期本身在读写时判断
 			logErr("audit anchor", a.AnchorTick(ctx))
 			if now.Sub(lastReconcile) >= reconcileEvery {
 				lastReconcile = now

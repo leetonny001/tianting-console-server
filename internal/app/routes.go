@@ -127,7 +127,10 @@ func (a *App) apiRoutes(ps perm.Space) []route {
 		{method: "POST", path: "/console/api/accounts/{id}/unlock", perm: manage, stepUp: true, action: "account.unlock", h: (*rc).unlockAccount},
 	}
 	if len(ps.ApprovalRoles) > 0 {
-		rs = append(rs, route{method: "POST", path: "/console/api/accounts/{id}/roles/approve", perm: manage, stepUp: true, action: actionRoleApprove, h: (*rc).approveRole})
+		rs = append(rs,
+			route{method: "POST", path: "/console/api/accounts/{id}/roles/approve", perm: manage, stepUp: true, action: actionRoleApprove, h: (*rc).approveRole},
+			route{method: "POST", path: "/console/api/accounts/{id}/roles/reject", perm: manage, stepUp: true, action: actionRoleReject, h: (*rc).rejectRole},
+		)
 	}
 	rs = append(rs,
 		route{method: "GET", path: auditPath, perm: ps.AuditPerm, action: actionAuditQuery, h: (*rc).auditQuery},
@@ -324,7 +327,7 @@ func (c *rc) audited(action string, target audit.Target, params map[string]any, 
 		err = apierr.New(apierr.ResultUnknown, "result unknown, refresh to confirm and do not resubmit")
 	case errors.As(err, &e):
 		res.Result, res.Code = audit.Failure, e.Code
-		if e.Code == apierr.NotFound && strings.HasPrefix(action, "account.") {
+		if e.Code == apierr.NotFound && (strings.HasPrefix(action, "account.") || action == actionRoleReject) {
 			res.Result = audit.Denied // 对另一个空间的账号操作（F-CON-02 规则 7）
 		}
 	default:

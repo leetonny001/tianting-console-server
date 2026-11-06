@@ -10,7 +10,10 @@ func businessRoutes() []route {
 		{method: "POST", path: "/console/api/users/import/validate", perm: "user.import", h: (*rc).validateUsers},
 		{method: "POST", path: "/console/api/users/import", perm: "user.import", action: "user.import", h: (*rc).importUsers},
 		{method: "POST", path: "/console/api/users/sessions/query", perm: "user.sessions", sensitive: true, action: "user.sessions.query", h: (*rc).queryUserSessions},
+		{method: "POST", path: "/console/api/users/convs/query", perm: "msg.meta", sensitive: true, action: actionUserConvs, h: (*rc).queryUserConvs},
 		{method: "GET", path: "/console/api/users/{id}", perm: "user.read", h: (*rc).getUser},
+		// 用户所在群（CS-063）：只读、不写审计，和详情、好友列表一样路径里带 userId。
+		{method: "GET", path: "/console/api/users/{id}/groups", perm: "group.read", h: (*rc).listUserGroups},
 		{method: "POST", path: "/console/api/users/{id}/kick", perm: "user.kick", action: "user.kick", h: (*rc).kickUser},
 		{method: "PUT", path: "/console/api/users/{id}/official", perm: "user.official", action: "user.official.set", h: (*rc).setOfficial},
 		// 社交（CS-023）

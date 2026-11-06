@@ -92,10 +92,22 @@ type muteBody struct {
 	reasonBody
 }
 
-// muteTarget 校验范围和对象。
+const muteScopeGroupAll = "groupAll"
+
+// muteTarget 校验范围和对象。全群禁言（F-ADM-42）的对象是群，没有 userId。
 func (c *rc) muteTarget(req *muteBody) (audit.Target, map[string]any, bool) {
 	body := map[string]any{"scope": req.Scope, "userId": req.UserID}
 	switch req.Scope {
+	case muteScopeGroupAll:
+		if req.UserID != "" {
+			c.fail(apierr.New(apierr.BadRequest, "userId is not allowed for scope groupAll"))
+			return audit.Target{}, nil, false
+		}
+		if !validID(req.GroupID) {
+			c.fail(apierr.New(apierr.InvalidID, "invalid groupId"))
+			return audit.Target{}, nil, false
+		}
+		return audit.NewTarget("group", req.GroupID), map[string]any{"scope": req.Scope, "groupId": req.GroupID}, true
 	case "user":
 		if req.GroupID != "" {
 			c.fail(apierr.New(apierr.BadRequest, "groupId is only for scope group"))
@@ -108,7 +120,7 @@ func (c *rc) muteTarget(req *muteBody) (audit.Target, map[string]any, bool) {
 		}
 		body["groupId"] = req.GroupID
 	default:
-		c.fail(apierr.New(apierr.BadRequest, "scope must be user or group"))
+		c.fail(apierr.New(apierr.BadRequest, "scope must be user, group or groupAll"))
 		return audit.Target{}, nil, false
 	}
 	if !validID(req.UserID) {
@@ -132,7 +144,13 @@ func (c *rc) setMute() {
 		return
 	}
 	var secs *int64
-	if req.CustomSeconds != nil {
+	if req.Scope == muteScopeGroupAll {
+		// 全群禁言是开关，没有时长（F-ADM-42）。
+		if req.Duration != "" || req.CustomSeconds != nil {
+			c.fail(apierr.New(apierr.BadRequest, "scope groupAll has no duration"))
+			return
+		}
+	} else if req.CustomSeconds != nil {
 		if req.Duration != "" || *req.CustomSeconds < minMuteSeconds || *req.CustomSeconds > maxMuteSeconds {
 			c.fail(apierr.New(apierr.BadRequest, "customSeconds must be 60 to 2592000, without duration"))
 			return
@@ -147,7 +165,10 @@ func (c *rc) setMute() {
 		return
 	}
 	c.ticket = req.Ticket
-	body["durationSeconds"], body["reason"] = secs, reason
+	body["reason"] = reason
+	if req.Scope != muteScopeGroupAll {
+		body["durationSeconds"] = secs
+	}
 	params := map[string]any{"scope": req.Scope}
 	if req.GroupID != "" {
 		params["groupId"] = req.GroupID

@@ -23,6 +23,9 @@ type Space struct {
 	AuditAll   bool                // 审计员可以选"全部空间"（F-CON-09 规则 1：只有运维空间）
 	// ApprovalRoles 是授予后要第二个超管批准才生效的角色（PRD-ops F-OPS-02 规则 6）。
 	ApprovalRoles []string
+	// BootstrapLimit > 0：启用的超管（含待激活）少于这个数时命令行可以再建一个（PRD-ops F-OPS-02 规则 6）。
+	// 0：基座规则，已有启用的超管时命令行拒绝（F-CON-02 规则 2）。
+	BootstrapLimit int
 }
 
 // Admin 是管理空间（第 5.2 节）。
@@ -40,7 +43,7 @@ var Admin = Space{
 
 // Ops 是运维空间（PRD-ops F-OPS-02，第一批）。没有应急授权。
 var Ops = Space{
-	Name: "ops", SuperAdmin: "ops_superadmin", Auditor: "ops_auditor", ManagePerm: "ops.account.manage", AuditPerm: "ops.audit.read", AuditAll: true, ApprovalRoles: []string{"ops_engineer"},
+	Name: "ops", SuperAdmin: "ops_superadmin", Auditor: "ops_auditor", ManagePerm: "ops.account.manage", AuditPerm: "ops.audit.read", AuditAll: true, ApprovalRoles: []string{"ops_engineer", "ops_superadmin"}, BootstrapLimit: 2,
 	Exclusive: []string{"ops_superadmin", "ops_auditor"}, Sensitive: []string{"ops_superadmin", "ops_engineer", "ops_auditor"},
 	Roles: map[string][]string{
 		"ops_viewer":     {"ops.overview.read", "ops.config.read"},

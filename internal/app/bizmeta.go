@@ -153,3 +153,114 @@ func (c *rc) queryMeta() {
 		return page, nil
 	})
 }
+
+// CS-063：用户所在群和用户会话列表（F-ADM-10 规则 2、F-ADM-30 规则 1 ③）。
+
+const actionUserConvs = "msg.user_convs.query"
+
+// listUserGroups：分页，不含已解散的群（im-server 保证），不写审计。
+func (c *rc) listUserGroups() {
+	id := c.r.PathValue("id")
+	if !validID(id) {
+		c.fail(apierr.New(apierr.InvalidID, "invalid userId"))
+		return
+	}
+	q, ok := c.listParams("cursor")
+	if !ok {
+		return
+	}
+	q.Del("q")
+	c.imRead("/admin/users/"+pathID(id)+"/groups", q)
+}
+
+// userConv 是用户会话列表的一项：只有会话 ID、类型、最后活跃时间。im-server 的响应反序列化到这里，
+// 其他字段（对方、群名、最后一条消息的发送者和类型）都丢弃，这个接口出不去正文和摘要。
+type userConv struct {
+	ConvID    string `json:"convId"`
+	Type      string `json:"type"`
+	UpdatedAt int64  `json:"updatedAt"`
+}
+
+type userConvPage struct {
+	Convs      []userConv `json:"convs"`
+	NextCursor string     `json:"nextCursor"`
+}
+
+// userConvsActive：这个账号打开过这个用户的会话列表、还在 15 分钟内。按账号 + 用户算，换一个浏览器会话不用重新填。
+func (c *rc) userConvsActive(userID string) (bool, error) {
+	var until int64
+	err := c.a.DB.QueryRow(c.ctx, `SELECT until FROM biz.user_convs_windows WHERE account_id = $1::uuid AND user_id = $2`, c.acct.ID, userID).Scan(&until)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && until > c.now(), err
+}
+
+func (c *rc) userConvsEnter(userID string) error {
+	_, err := c.a.DB.Exec(c.ctx, `INSERT INTO biz.user_convs_windows (account_id, user_id, until) VALUES ($1::uuid, $2, $3)
+		ON CONFLICT (account_id, user_id) DO UPDATE SET until = EXCLUDED.until`, c.acct.ID, userID, c.now()+metaWindow.Milliseconds())
+	return err
+}
+
+// queryUserConvs：不带 cursor 是打开，必填理由、写一条审计，窗口从这时开始；翻页（带 cursor）在窗口内不要理由、不写审计，也不延长窗口。
+// 窗口外的翻页和打开一样。理由校验在调用 im-server 之前：校验不过 im-server 收不到请求。
+func (c *rc) queryUserConvs() {
+	var req struct {
+		UserID string `json:"userId"`
+		Cursor string `json:"cursor"`
+		reasonBody
+	}
+	if !c.readJSON(&req) {
+		return
+	}
+	if !validID(req.UserID) {
+		c.fail(apierr.New(apierr.InvalidID, "invalid userId"))
+		return
+	}
+	body := map[string]any{"userId": req.UserID}
+	if req.Cursor != "" {
+		body["cursor"] = req.Cursor
+	}
+	fetch := func() (userConvPage, error) {
+		var page userConvPage
+		if err := c.im("POST", "/admin/users/convs/query", nil, body, &page); err != nil {
+			return page, err
+		}
+		if page.Convs == nil {
+			page.Convs = []userConv{}
+		}
+		return page, nil
+	}
+	if req.Cursor != "" {
+		active, err := c.userConvsActive(req.UserID)
+		if err != nil {
+			c.failErr(actionUserConvs, err)
+			return
+		}
+		if active {
+			page, err := fetch()
+			if err != nil {
+				c.failErr(actionUserConvs, err)
+				return
+			}
+			c.ok(page)
+			return
+		}
+	}
+	reason, ok := c.reasonTicket(req.Reason, req.Ticket)
+	if !ok {
+		return
+	}
+	c.ticket = req.Ticket
+	c.audited(actionUserConvs, audit.NewTarget("user", req.UserID), nil, reason, func() (any, error) {
+		page, err := fetch()
+		if err != nil {
+			return nil, err
+		}
+		c.resultParams = map[string]any{"count": len(page.Convs)}
+		if err := c.userConvsEnter(req.UserID); err != nil {
+			c.a.Log.Error("user convs window", "err", err) // 只影响下一页要不要再填理由
+		}
+		return page, nil
+	})
+}

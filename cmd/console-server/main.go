@@ -5,7 +5,7 @@
 //	console-server [serve]            启动服务
 //	console-server migrate up|status  数据库迁移（用 CON_OWNER_DATABASE_URL，也就是 console_owner）
 //	console-server keys rotate        用当前数据密钥重新加密全部旧记录
-//	console-server account bootstrap --space admin|ops --username U   创建空间的第一个超管，输出一次性激活码
+//	console-server account bootstrap --space admin|ops --username U   创建空间超管（ops 空间少于 2 个时可以建第二个），输出一次性激活码
 //	console-server account unlock --space admin|ops --username U      解锁账号（应急）
 //	console-server audit verify [--from-seq N]                        校验审计链，发现问题时非 0 退出
 //	console-server audit archive                                      加密归档满 1 年的审计分区（用 CON_ARCHIVER_DATABASE_URL）

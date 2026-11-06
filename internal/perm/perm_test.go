@@ -62,6 +62,10 @@ func TestUnionAndConflict(t *testing.T) {
 	if !Ops.RolesConflict([]string{"ops_engineer", "ops_superadmin"}) || !Ops.RolesConflict([]string{"ops_engineer", "ops_auditor"}) || Ops.RolesConflict([]string{"ops_viewer", "ops_engineer"}) {
 		t.Error("ops conflicts")
 	}
+	// 双人批准和第二超管的命令行例外只在运维空间（PRD-ops F-OPS-02 规则 6）。
+	if !slices.Equal(Ops.ApprovalRoles, []string{"ops_engineer", "ops_superadmin"}) || Ops.BootstrapLimit != 2 || len(Admin.ApprovalRoles) != 0 || Admin.BootstrapLimit != 0 {
+		t.Error("two-person approval settings")
+	}
 	if Ops.Emergency != "" || Admin.Emergency == "" {
 		t.Error("emergency grants are admin-only")
 	}

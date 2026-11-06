@@ -18,8 +18,6 @@ import (
 	"tianting/console/internal/secret"
 )
 
-const actionRoleApprove = "account.role_approve"
-
 var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 func conflict(format string, args ...any) *apierr.Error {
@@ -45,6 +43,10 @@ type pendingRoleJSON struct {
 	Role        string `json:"role"`
 	RequestedBy string `json:"requestedBy"`
 	RequestedAt int64  `json:"requestedAt"`
+	ExpiresAt   int64  `json:"expiresAt"`
+	// Replaces、With：批准时去掉的现有角色、一起生效的角色。页面据此显示批准之后的角色。
+	Replaces []string `json:"replaces"`
+	With     []string `json:"with"`
 }
 
 func (c *rc) accountView(a accountRow) (accountJSON, error) {
@@ -56,7 +58,8 @@ func (c *rc) accountView(a accountRow) (accountJSON, error) {
 	if err := c.a.DB.QueryRow(c.ctx, `SELECT COALESCE(MAX(locked_until), 0) FROM auth.login_failures WHERE space = $1 AND username = $2`, a.Space, a.Username).Scan(&until); err != nil {
 		return accountJSON{}, err
 	}
-	rows, err := c.a.DB.Query(c.ctx, `SELECT role, requested_by_name, requested_at FROM auth.role_grant_requests WHERE account_id = $1::uuid AND status = 'pending' ORDER BY role`, a.ID)
+	rows, err := c.a.DB.Query(c.ctx, `SELECT role, requested_by_name, requested_at, requested_at + $2::bigint, replaces_roles, with_roles FROM auth.role_grant_requests
+		WHERE account_id = $1::uuid AND status = 'pending' AND requested_at > $3 ORDER BY role`, a.ID, roleGrantTTL.Milliseconds(), c.a.grantCutoff())
 	if err != nil {
 		return accountJSON{}, err
 	}
@@ -72,6 +75,7 @@ func (c *rc) accountView(a accountRow) (accountJSON, error) {
 
 // listAccounts：查询带 space 条件，看不到另一个空间的账号（F-CON-02 规则 7）。
 func (c *rc) listAccounts() {
+	c.expireGrants()
 	q := c.r.URL.Query()
 	limit := 20
 	switch q.Get("limit") {
@@ -128,6 +132,7 @@ func (c *rc) target() (*accountRow, error) {
 }
 
 func (c *rc) getAccount() {
+	c.expireGrants()
 	a, err := c.target()
 	if err != nil {
 		c.failErr("get account", err)
@@ -199,7 +204,7 @@ func (c *rc) createAccount() {
 			if err := insertRoles(c.ctx, tx, id, effective, c.acct.Username, now); err != nil {
 				return err
 			}
-			return c.syncPending(tx, id, pending)
+			return c.syncPending(tx, id, pending, nil, nil)
 		})
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -239,104 +244,6 @@ func (c *rc) splitGrant(requested, before []string) (effective, pending []string
 		}
 	}
 	return effective, pending
-}
-
-// syncPending 让账号的待批准角色等于 pending：不再要的作废，已有的保留原发起人。
-func (c *rc) syncPending(tx pgx.Tx, accountID string, pending []string) error {
-	if len(c.ps.ApprovalRoles) == 0 {
-		return nil
-	}
-	now := c.now()
-	if _, err := tx.Exec(c.ctx, `UPDATE auth.role_grant_requests SET status = 'cancelled', decided_by = $3::uuid, decided_by_name = $4, decided_at = $5
-		WHERE account_id = $1::uuid AND status = 'pending' AND NOT role = ANY($2)`, accountID, pending, c.acct.ID, c.acct.Username, now); err != nil {
-		return err
-	}
-	for _, r := range pending {
-		if _, err := tx.Exec(c.ctx, `INSERT INTO auth.role_grant_requests (id, account_id, role, requested_by, requested_by_name, requested_at, status)
-			VALUES ($1::uuid, $2::uuid, $3, $4::uuid, $5, $6, 'pending') ON CONFLICT (account_id, role) WHERE status = 'pending' DO NOTHING`,
-			ids.New(c.a.Clock.Now()), accountID, r, c.acct.ID, c.acct.Username, now); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// approveRole：第二个超管批准待批准的角色（AC-OPS-02-8）。发起人自己批准 403 / 4030，留一条 denied。
-func (c *rc) approveRole() {
-	var req struct {
-		Role string `json:"role"`
-	}
-	if !c.readJSON(&req) {
-		return
-	}
-	if !slices.Contains(c.ps.ApprovalRoles, req.Role) {
-		c.fail(apierr.New(apierr.BadRequest, "this role does not need approval"))
-		return
-	}
-	a, err := c.target()
-	if err != nil {
-		c.failErr(actionRoleApprove, err)
-		return
-	}
-	if a != nil {
-		var requestedBy string
-		err := c.a.DB.QueryRow(c.ctx, `SELECT requested_by::text FROM auth.role_grant_requests WHERE account_id = $1::uuid AND role = $2 AND status = 'pending'`, a.ID, req.Role).Scan(&requestedBy)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			c.failErr(actionRoleApprove, err)
-			return
-		}
-		if requestedBy == c.acct.ID || a.ID == c.acct.ID {
-			c.denied = audit.NewTarget("account", a.Username)
-			c.a.recordDenied(c, actionRoleApprove)
-			c.fail(&apierr.Error{Code: apierr.Forbidden, Msg: "another super admin must approve this grant", Reason: "ownGrant"})
-			return
-		}
-	}
-	c.withTarget(actionRoleApprove, "", map[string]any{"role": req.Role}, func(a accountRow) (any, error) {
-		var requestedByName string
-		err := pgx.BeginFunc(c.ctx, c.a.DB, func(tx pgx.Tx) error {
-			if err := c.spaceLock(tx); err != nil {
-				return err
-			}
-			var requestID, status string
-			err := tx.QueryRow(c.ctx, `SELECT r.id::text, r.requested_by_name, a.status FROM auth.role_grant_requests r JOIN auth.accounts a ON a.id = r.account_id
-				WHERE r.account_id = $1::uuid AND r.role = $2 AND r.status = 'pending' FOR UPDATE OF r`, a.ID, req.Role).Scan(&requestID, &requestedByName, &status)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return conflict("no pending grant for this role")
-			}
-			if err != nil {
-				return err
-			}
-			if status == "disabled" {
-				return conflict("the account is disabled")
-			}
-			rows, err := tx.Query(c.ctx, `SELECT role FROM auth.account_roles WHERE account_id = $1::uuid`, a.ID)
-			if err != nil {
-				return err
-			}
-			roles, err := pgx.CollectRows(rows, pgx.RowTo[string])
-			if err != nil {
-				return err
-			}
-			if c.ps.RolesConflict(append(roles, req.Role)) {
-				return conflict("this role cannot be combined with other roles")
-			}
-			if err := insertRoles(c.ctx, tx, a.ID, []string{req.Role}, c.acct.Username, c.now()); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(c.ctx, `UPDATE auth.role_grant_requests SET status = 'approved', decided_by = $2::uuid, decided_by_name = $3, decided_at = $4 WHERE id = $1::uuid`,
-				requestID, c.acct.ID, c.acct.Username, c.now()); err != nil {
-				return err
-			}
-			return revokeAll(c.ctx, tx, a.ID, "") // 角色变化：重新登录后按新角色（F-CON-05 规则 4）
-		})
-		if err != nil {
-			return nil, err
-		}
-		c.resultParams = map[string]any{"role": req.Role, "requestedBy": requestedByName}
-		c.notifySensitive(a.Username, []string{req.Role}, nil, nil)
-		return map[string]any{"role": req.Role}, nil
-	})
 }
 
 // notifySensitive：新获得敏感角色时通知审计员（F-CON-06 规则 5）。pending 是其中还没生效的。
@@ -419,6 +326,12 @@ func (c *rc) setRoles() {
 		return
 	}
 	req.Roles = uniqueRoles(req.Roles)
+	if len(c.ps.ApprovalRoles) > 0 {
+		if err := c.a.ExpireRoleGrants(c.ctx); err != nil { // 过期的不能挡住新的待批准
+			c.failErr("account.roles", err)
+			return
+		}
+	}
 	c.withTarget("account.roles", "", map[string]any{"roles": req.Roles}, func(a accountRow) (any, error) {
 		if a.ID == c.acct.ID {
 			return nil, conflict("you cannot change your own roles")
@@ -431,24 +344,44 @@ func (c *rc) setRoles() {
 			return nil, err
 		}
 		effective, pending := c.splitGrant(req.Roles, before)
+		// 待批准期间权限按未生效前的角色计算（F-OPS-02 规则 6）：这次改动要去掉现有角色时，整个改动等批准后才生效，
+		// 拒绝或过期后账号的角色不变。否则互斥角色（ops_viewer → ops_superadmin）要么先丢权限，要么批准时冲突。
+		var replaces, with []string
+		if len(pending) > 0 {
+			for _, r := range before {
+				if !slices.Contains(req.Roles, r) {
+					replaces = append(replaces, r)
+				}
+			}
+			if len(replaces) > 0 {
+				for _, r := range effective {
+					if !slices.Contains(before, r) {
+						with = append(with, r)
+					}
+				}
+				effective = slices.Sorted(slices.Values(before))
+			}
+		}
 		// 只是多了一个待批准的角色时，实际权限没变，会话不用失效。
 		unchanged := len(pending) > 0 && slices.Equal(effective, slices.Sorted(slices.Values(before)))
 		err = pgx.BeginFunc(c.ctx, c.a.DB, func(tx pgx.Tx) error {
 			if err := c.spaceLock(tx); err != nil {
 				return err
 			}
-			if a.Status == "active" && slices.Contains(before, c.ps.SuperAdmin) && !slices.Contains(req.Roles, c.ps.SuperAdmin) {
-				if err := c.keepsSuper(tx, a.ID); err != nil {
+			if !unchanged {
+				if a.Status == "active" && slices.Contains(before, c.ps.SuperAdmin) && !slices.Contains(req.Roles, c.ps.SuperAdmin) {
+					if err := c.keepsSuper(tx, a.ID); err != nil {
+						return err
+					}
+				}
+				if _, err := tx.Exec(c.ctx, `DELETE FROM auth.account_roles WHERE account_id = $1::uuid`, a.ID); err != nil {
+					return err
+				}
+				if err := insertRoles(c.ctx, tx, a.ID, effective, c.acct.Username, c.now()); err != nil {
 					return err
 				}
 			}
-			if _, err := tx.Exec(c.ctx, `DELETE FROM auth.account_roles WHERE account_id = $1::uuid`, a.ID); err != nil {
-				return err
-			}
-			if err := insertRoles(c.ctx, tx, a.ID, effective, c.acct.Username, c.now()); err != nil {
-				return err
-			}
-			if err := c.syncPending(tx, a.ID, pending); err != nil {
+			if err := c.syncPending(tx, a.ID, pending, replaces, with); err != nil {
 				return err
 			}
 			if unchanged {

@@ -14,6 +14,7 @@ import (
 
 // 通知种类。
 const (
+	KindBootstrap       = "account.bootstrap"
 	KindActivated       = "account.activated"
 	KindReset           = "account.reset"
 	KindLocked          = "account.locked"
