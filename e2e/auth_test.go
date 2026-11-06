@@ -548,23 +548,27 @@ func TestCON03Timing(t *testing.T) {
 	}
 	w := newWorld(t, map[string]string{"CON_TEST_DISABLE_LOCKOUT": "1", "CON_ARGON_MEMORY_KIB": "65536", "CON_ARGON_TIME": "3"})
 	w.super("adm1")
-	measure := func(name string) time.Duration {
-		var d []time.Duration
-		for range 15 {
-			start := time.Now()
-			expect(t, name, w.client(name).do("POST", "/console/api/auth/login", map[string]any{"username": name, "password": "wrong-password-xx", "otp": "123456"}), 401, 4015)
-			d = append(d, time.Since(start))
-		}
-		slices.Sort(d)
-		return d[len(d)/2]
+	once := func(name string) time.Duration {
+		start := time.Now()
+		expect(t, name, w.client(name).do("POST", "/console/api/auth/login", map[string]any{"username": name, "password": "wrong-password-xx", "otp": "123456"}), 401, 4015)
+		return time.Since(start)
 	}
-	ghost, real := measure("ghost"), measure("adm1")
-	diff := ghost - real
+	// Alternate the two groups so that a change in machine load lands on both.
+	var ghost, real []time.Duration
+	for range 50 {
+		ghost = append(ghost, once("ghost"))
+		real = append(real, once("adm1"))
+	}
+	slices.Sort(ghost)
+	slices.Sort(real)
+	g, r := ghost[len(ghost)/2], real[len(real)/2]
+	diff, top := g-r, g
 	if diff < 0 {
-		diff = -diff
+		diff, top = -diff, r
 	}
-	if diff > 30*time.Millisecond {
-		t.Errorf("median: ghost %v, real %v", ghost, real)
+	t.Logf("median: ghost %v, real %v, diff %v (%.2f%%)", g, r, diff, 100*float64(diff)/float64(top))
+	if diff*20 > top {
+		t.Errorf("median differs by more than 5%%: ghost %v, real %v", g, r)
 	}
 }
 
