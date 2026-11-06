@@ -47,6 +47,14 @@ go test -race ./...
 - 用户所在群：`GET /console/api/users/{id}/groups`，权限 `group.read`，分页，不写审计。和用户详情、好友列表一样路径里带 userId。
 - 用户会话列表：`POST /console/api/users/convs/query {userId, reason, cursor?}`，权限 `msg.meta`。打开必填理由并写 `msg.user_convs.query`；同一账号查同一用户 15 分钟内翻页免理由、不写审计（窗口从打开算，翻页不延长）。理由校验不过不调用 im-server。响应只有 `convId`、`type`、`updatedAt`。
 
+## 邀请码和用户详情的账号信息（PRD-chat F-ACC-09）
+
+- `POST /console/api/invites {count?, maxUses, expiresAt, note?}`、`GET /console/api/invites?limit=&cursor=`、`POST /console/api/invites/{id}/disable`，权限 `account.invite`（只有 `operator`），不要理由和 step-up。im-server 的 `console` 调用方要配 scope `account.invite`。
+- 明文只在生成响应的 `invites[].code` 里出现一次。审计（`invite.create`、`invite.disable`）只记数量、上限、到期时间、是否有备注和 `inviteId`，不记明文、后 4 位和备注。列表用独立类型，im-server 多返回的字段不会透传。
+- 生成时审计写失败 503 / 5031，不调用 im-server。结果未知 504 / 5040 时响应里没有明文，要在列表里停用那一批再重新生成。
+- `GET /console/api/users/{id}` 带 `account {hasAccount, createdAt?, lastLoginAt?, sessions}`，只有这 4 个字段。账号信息取不到时 `account: null`、`accountUnavailable: true`，不能当成"没有账号"。
+- 第一批没有改用户密码或恢复码的接口（AC-ACC-05-9）。`/console/api/me/password`、`/me/recovery-codes`、`/accounts/{id}/reset` 只改后台账号自己的凭证。
+
 ## 运维模块
 
 接口清单是 `api/ops-routes.yaml`，启动时和注册的路由比对，不一致就启动失败；权限矩阵测试用它做数据源。节点凭证、Prometheus、Alertmanager、备份桶、Grafana 的配置见 `deploy/console-server.env.example`。

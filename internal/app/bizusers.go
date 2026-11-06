@@ -34,10 +34,19 @@ func (c *rc) userPath() (string, string, bool) {
 	return id, "/admin/users/" + pathID(id), true
 }
 
+// getUser 是用户详情：im-server 的资料加上账号信息（CS-200）。
 func (c *rc) getUser() {
-	if _, path, ok := c.userPath(); ok {
-		c.imRead(path, nil)
+	id, path, ok := c.userPath()
+	if !ok {
+		return
 	}
+	var out map[string]any
+	if err := c.im(http.MethodGet, path, nil, nil, &out); err != nil {
+		c.failErr("get user", err)
+		return
+	}
+	c.mergeAccountInfo(id, out)
+	c.ok(out)
 }
 
 type reasonBody struct {

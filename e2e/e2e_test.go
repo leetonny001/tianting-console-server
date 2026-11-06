@@ -508,7 +508,11 @@ func startRealIM(t *testing.T) (string, ed25519.PrivateKey) {
 // msgReadKey 是测试里 console-msgread 的私钥。
 var msgReadKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
 
-var allConsoleScopes = []string{"user.read", "user.write", "user.kick", "user.sessions", "token.issue", "group.read", "group.write", "group.dissolve", "msg.meta", "audit.read", "social.settings", "social.friends", "user.ban", "msg.delete", "mute.write", "push.user", "push.all", "stats.read"}
+// mainCredentialScopes 是主凭证 console 的 scope（PRD-admin F-KEY-02 规则 4，PRD-chat 第 14.1 节）：手写一份，和部署示例互相校验（TC-ACC-05-08）。
+var mainCredentialScopes = []string{"user.read", "user.write", "user.kick", "user.sessions", "group.read", "group.write", "group.dissolve", "msg.meta", "audit.read", "social.settings", "social.friends", "user.ban", "msg.delete", "mute.write", "push.user", "push.all", "stats.read", "account.invite"}
+
+// allConsoleScopes 多一个 token.issue：只是测试自己要签 token 连 WebSocket，生产的主凭证永远没有。
+var allConsoleScopes = append([]string{"token.issue"}, mainCredentialScopes...)
 
 // startRealIMWS 同时返回客户端（WebSocket）地址。
 func startRealIMWS(t *testing.T) (adminAddress, wsAddress string, key ed25519.PrivateKey) {
@@ -530,6 +534,8 @@ type imProc struct {
 	env       []string
 	cmd       *exec.Cmd
 	exited    chan struct{}
+	dir       string   // im.db 所在目录
+	logs      *syncBuf // 进程的 stdout、stderr
 }
 
 func startIMProc(t *testing.T, scopes []string, extraEnv ...string) *imProc {
@@ -563,7 +569,7 @@ func startIMProc(t *testing.T, scopes []string, extraEnv ...string) *imProc {
 		t.Fatal(err)
 	}
 	addr, adminAddr := freeAddr(t), freeAddr(t)
-	p := &imProc{t: t, admin: adminAddr, ws: addr, key: priv, bin: bin}
+	p := &imProc{t: t, admin: adminAddr, ws: addr, key: priv, bin: bin, dir: dir, logs: &syncBuf{}}
 	p.env = append(os.Environ(), "IM_ADDR="+addr, "IM_ADMIN_ADDR="+adminAddr, "IM_METRICS_ADDR=off", "IM_PPROF_ADDR=off", "IM_OPS_ADDR=off",
 		"IM_DB="+filepath.Join(dir, "im.db"), "IM_ADMIN_CALLERS="+callersFile, "IM_V13_ADMIN_FEATURES=1", "IM_PUSH_ENABLED=1")
 	p.env = append(p.env, extraEnv...)
@@ -579,6 +585,7 @@ func (p *imProc) start() {
 	p.t.Helper()
 	cmd := exec.Command(p.bin)
 	cmd.Env = p.env
+	cmd.Stdout, cmd.Stderr = p.logs, p.logs
 	if err := cmd.Start(); err != nil {
 		p.t.Fatal(err)
 	}

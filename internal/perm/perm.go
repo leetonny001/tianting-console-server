@@ -34,7 +34,7 @@ var Admin = Space{
 	Exclusive: []string{"auditor"}, Sensitive: []string{"moderator", "auditor", "super_admin"},
 	Roles: map[string][]string{
 		"super_admin": {"user.read", "social.read", "group.read", "admin.manage", "admin.emergency", "push.all.approve", "push.records.read", "stats.read"},
-		"operator":    {"user.read", "user.import", "user.official", "social.read", "social.write", "social.settings", "group.read", "group.write", "group.owner", "group.dissolve", "push.user", "push.all.request", "stats.read"},
+		"operator":    {"user.read", "user.import", "account.invite", "user.official", "social.read", "social.write", "social.settings", "group.read", "group.write", "group.owner", "group.dissolve", "push.user", "push.all.request", "stats.read"},
 		"support":     {"user.read", "user.kick", "user.sessions", "social.read", "group.read", "msg.meta", "mute.write"},
 		"moderator":   {"user.read", "user.kick", "user.sessions", "social.read", "group.read", "group.dissolve", "msg.meta", "mute.write", "user.ban", "msg.delete", "msg.read.group", "msg.read.c2c", "msg.quarantine.read"},
 		"auditor":     {"audit.read", "push.records.read"},

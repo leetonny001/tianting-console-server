@@ -16,6 +16,10 @@ func businessRoutes() []route {
 		{method: "GET", path: "/console/api/users/{id}/groups", perm: "group.read", h: (*rc).listUserGroups},
 		{method: "POST", path: "/console/api/users/{id}/kick", perm: "user.kick", action: "user.kick", h: (*rc).kickUser},
 		{method: "PUT", path: "/console/api/users/{id}/official", perm: "user.official", action: "user.official.set", h: (*rc).setOfficial},
+		// 邀请码（CS-200，PRD-chat F-ACC-09）。明文只在生成响应里出现一次，审计不记明文。
+		{method: "POST", path: "/console/api/invites", perm: "account.invite", action: actionInviteCreate, h: (*rc).createInvites},
+		{method: "GET", path: "/console/api/invites", perm: "account.invite", h: (*rc).listInvites},
+		{method: "POST", path: "/console/api/invites/{id}/disable", perm: "account.invite", action: actionInviteDisable, h: (*rc).disableInvite},
 		// 社交（CS-023）
 		{method: "GET", path: "/console/api/users/{id}/friends", perm: "social.read", h: (*rc).listFriends},
 		{method: "POST", path: "/console/api/friends/import/validate", perm: "social.write", h: (*rc).validateFriendsImport},

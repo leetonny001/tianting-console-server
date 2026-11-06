@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +40,8 @@ type imProxy struct {
 	inject func(c imCall) int
 	// delay 是收到 im-server 响应之后再等多久：请求已经执行，console 却等不到结果。
 	delay time.Duration
+	// rewrite 改写 im-server 的响应：模拟它多返回字段。
+	rewrite func(path string, body []byte) []byte
 }
 
 func newIMProxy(t *testing.T, adminAddr string) *imProxy {
@@ -56,11 +59,16 @@ func newIMProxy(t *testing.T, adminAddr string) *imProxy {
 		if err != nil {
 			return err
 		}
-		r.Body = io.NopCloser(bytes.NewReader(data))
 		p.mu.Lock()
 		p.replies = append(p.replies, string(data))
-		delay := p.delay
+		delay, rewrite := p.delay, p.rewrite
 		p.mu.Unlock()
+		if rewrite != nil {
+			data = rewrite(r.Request.URL.Path, data)
+			r.ContentLength = int64(len(data))
+			r.Header.Set("Content-Length", strconv.Itoa(len(data)))
+		}
+		r.Body = io.NopCloser(bytes.NewReader(data))
 		if delay > 0 {
 			time.Sleep(delay)
 		}

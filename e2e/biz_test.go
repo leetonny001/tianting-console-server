@@ -1118,6 +1118,14 @@ func TestAdminMatrix(t *testing.T) {
 		"PUT /console/api/users/{id}/official": func(c *user) reply {
 			return c.do("PUT", "/console/api/users/"+u+"/official", map[string]any{"official": true, "reason": goodReason})
 		},
+		"POST /console/api/invites": func(c *user) reply {
+			return c.do("POST", "/console/api/invites", inviteBody(1, 1))
+		},
+		"GET /console/api/invites": func(c *user) reply { return c.do("GET", "/console/api/invites", nil) },
+		"POST /console/api/invites/{id}/disable": func(c *user) reply {
+			r := roles["operator"].do("POST", "/console/api/invites", inviteBody(1, 1))
+			return c.do("POST", "/console/api/invites/"+firstInvite(t, r).ID+"/disable", map[string]any{})
+		},
 		"GET /console/api/users/{id}/friends": func(c *user) reply { return c.do("GET", "/console/api/users/"+u+"/friends", nil) },
 		"POST /console/api/friends/import/validate": func(c *user) reply {
 			return c.upload("/console/api/friends/import/validate", u+","+u+"b\n", nil)
@@ -1301,6 +1309,7 @@ var matrixNotice = map[string]any{"title": "matrix", "text": "matrix"}
 var permMatrix = map[string]map[string]bool{
 	"user.read":         {"super_admin": true, "operator": true, "support": true, "moderator": true},
 	"user.import":       {"operator": true},
+	"account.invite":    {"operator": true},
 	"user.kick":         {"support": true, "moderator": true},
 	"user.sessions":     {"support": true, "moderator": true},
 	"user.official":     {"operator": true},

@@ -10,6 +10,7 @@ func TestAdminMatrix(t *testing.T) {
 	for perm, want := range map[string][]string{
 		"user.read":           {"super_admin", "operator", "support", "moderator"},
 		"user.import":         {"operator"},
+		"account.invite":      {"operator"},
 		"user.kick":           {"support", "moderator"},
 		"user.sessions":       {"support", "moderator"},
 		"user.official":       {"operator"},
