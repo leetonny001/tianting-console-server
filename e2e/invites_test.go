@@ -822,7 +822,7 @@ func TestTC_CHAT_90_04_NoSecretsInLogsAndAudit(t *testing.T) {
 	}
 	args := []string{"-I", scanner}
 	for _, m := range markers {
-		args = append(args, "--marker", m)
+		args = append(args, "--marker="+m) // 随机值可能以 - 开头，分开写 argparse 会当成选项
 	}
 	if out, err := exec.Command("python3", append(args, files...)...).CombinedOutput(); err != nil {
 		t.Errorf("scan-logs: %v: %s", err, out)
