@@ -633,3 +633,33 @@ func TestOpsApprovalConcurrent(t *testing.T) {
 		t.Errorf("pending left = %d", n)
 	}
 }
+
+// AC-OPS-01-20: no enabled super admin and both activation codes expired. The command line resends a code to an
+// existing pending super admin and adds nobody.
+func TestOpsBootstrapResend_AC01_20(t *testing.T) {
+	w := newWorld(t, nil)
+	ctx := context.Background()
+	boot := func(name string) (string, error) { return w.a.Bootstrap(ctx, "ops", name) }
+	for _, name := range []string{"osa", "osb"} {
+		if _, err := boot(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.advance(25 * time.Hour)
+	before := len(w.auditRows(`action = 'account.bootstrap' AND space = 'ops' AND target LIKE '%osa%'`))
+
+	code, err := boot("osa")
+	if err != nil {
+		t.Fatalf("resend: %v", err)
+	}
+	if rows := w.auditRows(`action = 'account.bootstrap' AND space = 'ops' AND target LIKE '%osa%'`); len(rows) != before+1 {
+		t.Errorf("audit: %d rows, had %d", len(rows), before)
+	}
+	if _, err := boot("osnew"); err == nil {
+		t.Error("new account while two are pending")
+	}
+	if n := countRows(t, w, `SELECT count(*) FROM auth.accounts WHERE space = 'ops'`); n != 2 {
+		t.Errorf("ops accounts = %d, want 2", n)
+	}
+	w.opsClient("osa").activate(code)
+}
