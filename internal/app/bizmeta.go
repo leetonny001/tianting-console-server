@@ -26,7 +26,9 @@ type messageMeta struct {
 	From       string `json:"from"`
 	Type       string `json:"type"`
 	BodyLength int    `json:"bodyLength"`
-	TS         int64  `json:"ts"`
+	// 图片、文件消息的原文件字节数（im-server 的 fileSize，PRD-chat v1.4 第 14.1 节，P-37 ③）；其他消息、已删除的没有。
+	FileSize *int64 `json:"fileSize,omitempty"`
+	TS       int64  `json:"ts"`
 	// 第二批：删除标记、删除时间、删除人（im-server 的值，CS-042）。
 	Deleted   bool   `json:"deleted,omitempty"`
 	DeletedAt int64  `json:"deletedAt,omitempty"`

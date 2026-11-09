@@ -120,7 +120,8 @@ func TestTC_FILE_91_01_MetaHasNoFileName(t *testing.T) {
 	fileName := mark + "-季度报告.pdf"
 	pdf := append([]byte("%PDF-1.4\n"), bytes.Repeat([]byte{7}, 4096)...)
 	fileID := w.upload(tok, "file", fileName, pdf, "application/pdf", nil)
-	imgID := w.upload(tok, "image", mark+"-photo.png", pngBytes(64, 48), "image/png", pngBytes(32, 24))
+	photo := pngBytes(64, 48)
+	imgID := w.upload(tok, "image", mark+"-photo.png", photo, "image/png", pngBytes(32, 24))
 	c := w.dial(u1, "web")
 	if f := c.sendAttachment(conv, "file", map[string]any{"file": map[string]any{"fileId": fileID}}); f["error"] != nil {
 		t.Fatalf("send file: %v", f)
@@ -161,10 +162,23 @@ func TestTC_FILE_91_01_MetaHasNoFileName(t *testing.T) {
 			keys = append(keys, k)
 		}
 		for _, k := range keys {
+			if k == "fileSize" && typ != "text" {
+				continue // 图片、文件的原文件字节数（PRD-chat v1.4 第 14.1 节，P-37 ③）
+			}
 			if k != "seq" && k != "msgId" && k != "from" && k != "type" && k != "bodyLength" && k != "ts" {
 				t.Errorf("%s meta has field %q", typ, k)
 			}
 		}
+	}
+	// v1.4：console 透传 im-server 的 fileSize（原文件字节数，不含缩略图）；文本消息没有。
+	if n, _ := types["file"]["fileSize"].(float64); n != float64(len(pdf)) {
+		t.Errorf("file fileSize = %v, want %d", types["file"]["fileSize"], len(pdf))
+	}
+	if n, _ := types["image"]["fileSize"].(float64); n != float64(len(photo)) {
+		t.Errorf("image fileSize = %v, want %d", types["image"]["fileSize"], len(photo))
+	}
+	if _, has := types["text"]["fileSize"]; has {
+		t.Errorf("text meta has fileSize: %v", types["text"])
 	}
 
 	// 2. 正文（msg.read.group，授权后）：文件消息带文件名和大小，图片带类型和宽高。
