@@ -13,9 +13,17 @@ import (
 
 const maxMemberBody = 512 << 10 // 2000 个 userId
 
+// groupListFields 是群列表每一行放出去的字段：tianting-admin Groups 页（GroupRow）读的群 ID、群名、类型、群主、成员数、
+// 新成员看历史、创建时间、解散时间（没有 = 正常）。
+var groupListFields = []string{"groupId", "name", "type", "owner", "memberCount", "historyVisible", "createdAt", "dissolvedAt"}
+
+// groupMemberFields 是群成员每一行放出去的字段：GroupDetail 页的成员表（MemberRow）读的 userId、角色、入群时间、
+// 群内禁言（没有这个键 = 没有禁言，null = 永久，MutedBadge 和"解除 / 群内禁言"按钮按它）。
+var groupMemberFields = []string{"userId", "role", "joinedAt", "mutedUntil"}
+
 func (c *rc) listGroups() {
 	if q, ok := c.listParams("includeDissolved", "cursor"); ok {
-		c.imRead("/admin/groups", q)
+		c.imList("/admin/groups", q, "groups", groupListFields)
 	}
 }
 
@@ -88,7 +96,7 @@ func (c *rc) listGroupMembers() {
 		return
 	}
 	q.Set("limit", "50")
-	c.imRead(path+"/members", q)
+	c.imList(path+"/members", q, "members", groupMemberFields)
 }
 
 // addGroupMembers：超过 2000 人一个都不加。检查在 intent 之后：被拒绝的尝试也留痕。

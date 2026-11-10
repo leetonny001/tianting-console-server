@@ -9,8 +9,48 @@ import (
 	"tianting/console/internal/audit"
 )
 
-// getStats 代理 GET /admin/stats（G-ADM-17）。B6 之前在线连接数只覆盖接收请求的节点（partial、scope），原样给页面标注。
-func (c *rc) getStats() { c.imRead("/admin/stats", nil) }
+// statsFields、statsOnlineFields 是首页数据概览（tianting-admin DataOverview 的 Stats）读的字段（console-chat 第 22 条）：
+// 在线连接数（总数、按平台、partial、scope：B6 之前只覆盖接收请求的节点，页面靠这两个标注）、今日新增用户、今日消息数、群总数、
+// 今日起点、数据时间。byPlatform 的键是平台名，只保留值是数字的项。
+var (
+	statsFields       = []string{"online", "newUsersToday", "messagesToday", "groupsTotal", "dayStart", "serverTime"}
+	statsOnlineFields = []string{"total", "byPlatform", "partial", "scope"}
+)
+
+// getStats 代理 GET /admin/stats（G-ADM-17），按白名单输出。
+func (c *rc) getStats() {
+	var raw map[string]json.RawMessage
+	if err := c.im(http.MethodGet, "/admin/stats", nil, nil, &raw); err != nil {
+		c.failErr("stats", err)
+		return
+	}
+	out := pickFields(raw, statsFields)
+	if _, listed := out["online"]; listed && string(raw["online"]) != "null" { // 白名单里有才处理里面一层
+		var online map[string]json.RawMessage
+		if err := json.Unmarshal(raw["online"], &online); err != nil {
+			c.failErr("stats online", err)
+			return
+		}
+		o := pickFields(online, statsOnlineFields)
+		if _, listed := o["byPlatform"]; listed && string(online["byPlatform"]) != "null" {
+			var by map[string]json.RawMessage
+			if err := json.Unmarshal(online["byPlatform"], &by); err != nil {
+				c.failErr("stats byPlatform", err)
+				return
+			}
+			counts := make(map[string]float64, len(by))
+			for k, n := range by {
+				var f float64
+				if json.Unmarshal(n, &f) == nil {
+					counts[k] = f
+				}
+			}
+			o["byPlatform"] = counts
+		}
+		out["online"] = o
+	}
+	c.ok(out)
+}
 
 // CS-021：用户。
 

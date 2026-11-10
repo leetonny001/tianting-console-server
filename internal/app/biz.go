@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -148,12 +149,28 @@ func (c *rc) im(method, path string, query url.Values, body, out any) error {
 	return c.imDo(c.requestID, method, path, query, body, out)
 }
 
-// imRead 是不写审计的只读查询：直接回 im-server 的响应。
-func (c *rc) imRead(path string, query url.Values) {
-	var out map[string]any
-	if err := c.im("GET", path, query, nil, &out); err != nil {
-		c.failErr("im read", err)
+// imList 是不写审计的分页列表查询（console-chat 第 22 条：console 是白名单结构，不透传）。
+// 外层只放 listKey 和翻页用的 nextCursor（页面的 useCursorList 只读这两个），每一行只放 rowFields 里的键，值原样（含 null）。
+func (c *rc) imList(path string, query url.Values, listKey string, rowFields []string) {
+	var raw map[string]json.RawMessage
+	if err := c.im("GET", path, query, nil, &raw); err != nil {
+		c.failErr("im list", err)
 		return
+	}
+	var rows []map[string]json.RawMessage
+	if v, ok := raw[listKey]; ok && string(v) != "null" {
+		if err := json.Unmarshal(v, &rows); err != nil {
+			c.failErr("im list rows", err)
+			return
+		}
+	}
+	list := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		list = append(list, pickFields(r, rowFields))
+	}
+	out := map[string]any{listKey: list}
+	if v, ok := raw["nextCursor"]; ok {
+		out["nextCursor"] = v
 	}
 	c.ok(out)
 }

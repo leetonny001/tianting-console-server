@@ -164,6 +164,10 @@ func (c *rc) queryMeta() {
 
 const actionUserConvs = "msg.user_convs.query"
 
+// userGroupFields 是用户所在群每一行放出去的字段：UserDetail 页的"所在群"表读的群 ID、群名、群内角色、成员数、入群时间。
+// UserGroupRow 里声明了 type，但页面不读，不放。
+var userGroupFields = []string{"groupId", "name", "role", "memberCount", "joinedAt"}
+
 // listUserGroups：分页，不含已解散的群（im-server 保证），不写审计。
 func (c *rc) listUserGroups() {
 	id := c.r.PathValue("id")
@@ -176,7 +180,7 @@ func (c *rc) listUserGroups() {
 		return
 	}
 	q.Del("q")
-	c.imRead("/admin/users/"+pathID(id)+"/groups", q)
+	c.imList("/admin/users/"+pathID(id)+"/groups", q, "groups", userGroupFields)
 }
 
 // userConv 是用户会话列表的一项：只有会话 ID、类型、最后活跃时间。im-server 的响应反序列化到这里，

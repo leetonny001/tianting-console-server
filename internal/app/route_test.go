@@ -136,7 +136,7 @@ func TestTC_ACC_05_08_SourceHasNoUserCredentialCalls(t *testing.T) {
 				if ownHandlers[v.Name.Name] {
 					found[v.Name.Name] = true
 					ast.Inspect(v.Body, func(m ast.Node) bool {
-						if s, ok := m.(*ast.SelectorExpr); ok && (s.Sel.Name == "im" || s.Sel.Name == "imDo" || s.Sel.Name == "IM" || s.Sel.Name == "imRead") {
+						if s, ok := m.(*ast.SelectorExpr); ok && (s.Sel.Name == "im" || s.Sel.Name == "imDo" || s.Sel.Name == "IM" || s.Sel.Name == "imList") {
 							t.Errorf("%s calls im-server", v.Name.Name)
 						}
 						return true
