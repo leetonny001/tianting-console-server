@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 
@@ -34,16 +35,45 @@ func (c *rc) userPath() (string, string, bool) {
 	return id, "/admin/users/" + pathID(id), true
 }
 
-// getUser 是用户详情：im-server 的资料加上账号信息（CS-200）。
+// userDetailFields 是用户详情从 im-server 资料里放出去的字段（console-chat 问题 20：console 是白名单结构，不透传）。
+// 依据是后台页面 tianting-admin 的 UserRow（src/api/types.ts）和 UserDetail 页：昵称、头像、资料创建时间、官方账号、在线、
+// 封禁（第二批，null = 没有封禁）、禁言（没有这个键 = 没有禁言，null = 永久）。account、accountUnavailable 是 console 自己加的（CS-200）。
+// 键在不在、值是不是 null 都有含义，所以按原始 JSON 逐个挑，不经过 Go 结构体。
+var userDetailFields = []string{"userId", "nickname", "avatar", "createdAt", "official", "online", "ban", "mutedUntil"}
+
+// userBanFields 是封禁对象里放出去的字段（UserRow.ban：到期、理由、操作人、时间）。
+var userBanFields = []string{"until", "reason", "by", "at"}
+
+// pickFields 只保留 keys 里的键，值原样（含 null）。
+func pickFields(in map[string]json.RawMessage, keys []string) map[string]any {
+	out := make(map[string]any, len(keys))
+	for _, k := range keys {
+		if v, ok := in[k]; ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// getUser 是用户详情：im-server 的资料（白名单）加上账号信息（CS-200）。
 func (c *rc) getUser() {
 	id, path, ok := c.userPath()
 	if !ok {
 		return
 	}
-	var out map[string]any
-	if err := c.im(http.MethodGet, path, nil, nil, &out); err != nil {
+	var raw map[string]json.RawMessage
+	if err := c.im(http.MethodGet, path, nil, nil, &raw); err != nil {
 		c.failErr("get user", err)
 		return
+	}
+	out := pickFields(raw, userDetailFields)
+	if ban, ok := raw["ban"]; ok && string(ban) != "null" {
+		var b map[string]json.RawMessage
+		if err := json.Unmarshal(ban, &b); err != nil {
+			c.failErr("get user ban", err) // 不是对象：不能当成"没有封禁"显示
+			return
+		}
+		out["ban"] = pickFields(b, userBanFields)
 	}
 	c.mergeAccountInfo(id, out)
 	c.ok(out)
