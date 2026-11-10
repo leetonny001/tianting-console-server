@@ -15,9 +15,10 @@ import (
 	"tianting/console/internal/imclient"
 )
 
-// CS-202：审核员经 console 代理取被撤回或被后台删除的消息里的图片、文件（PRD-chat 第 11.6、14.1 节，F-RCL-04，AC-RCL-04-9，R-CS-24）。
+// CS-202：审核员经 console 代理取被撤回或被后台删除的消息里的图片、文件（PRD-chat v1.6 第 11.6、14.1 节，F-RCL-04，AC-RCL-04-9，R-CS-24）。
 // C4 只开放隔离路径：权限点 msg.quarantine.read，这个浏览器会话对这个会话有有效的隔离授权；report.evidence 的路径随 C6。
-// im-server 侧是 POST /admin/files/{fileId}/fetch（console-msgread 调用，msg.quarantine + 同一调用方、操作人的有效隔离授权）。
+// im-server 侧是 POST /admin/files/{fileId}/fetch（console-msgread 调用，msg.quarantine + 同一调用方、操作人的有效隔离授权）；
+// 请求体带这个浏览器会话绑定的 grantId（PRD-chat v1.6，PENDING P-44 ④），im-server 只认这一个授权。grantId 只放请求体，不进 URL 和日志。
 // 响应字节流式透传：不落盘、不缓存；固定 Content-Disposition: attachment（不带文件名）、nosniff、no-store，不内联，后台 CSP 不放宽。
 // 审计记 fileId、msgId、variant、授权前 8 位，不记文件名。
 
@@ -52,8 +53,8 @@ func (c *rc) fetchFile() {
 		return
 	}
 	// 权限点 msg.quarantine.read 由路由声明（单聊、群相同，和申请隔离授权一致）；单聊再受 im-server 的 IM_C2C_BODY_ACCESS。
-	// 授权绑定在这个浏览器会话上（和正文读取相同）。im-server 的 fetch 不带 grantId、按调用方 + 操作人查授权（backend-chat 第 66 条），
-	// 所以过期也要在这里判断：否则同一个人另一个会话的授权能让这个会话取文件（console 问题 14）。
+	// 授权绑定在这个浏览器会话上（和正文读取相同）。im-server 按请求体里的 grantId 校验调用方、操作人、会话、隔离和到期（v1.6，P-44 ④）；
+	// console 这里仍先比一次到期时间，过期就不调用 im-server（console 问题 14）。
 	var grantID string
 	var expiresAt int64
 	err := c.a.DB.QueryRow(c.ctx, `SELECT grant_id, expires_at FROM biz.msg_grants WHERE session_hash = $1 AND conv_id = $2 AND quarantine = true`, c.sessionKey(), req.ConvID).Scan(&grantID, &expiresAt)
@@ -76,7 +77,7 @@ func (c *rc) fetchFile() {
 			return nil, apierr.New(apierr.Unavailable, "message body access is not configured")
 		}
 		resp, err := c.a.MsgRead.Stream(c.ctx, imclient.Call{Operator: c.operator(), RequestID: c.requestID}, "POST", "/admin/files/"+pathID(fileID)+"/fetch", nil,
-			map[string]any{"convId": req.ConvID, "msgId": req.MsgID, "variant": variant})
+			map[string]any{"grantId": grantID, "convId": req.ConvID, "msgId": req.MsgID, "variant": variant})
 		var e *apierr.Error
 		if errors.As(err, &e) && e.Code == apierr.MsgReadGrantNeeded {
 			c.dropQuarantineGrant(req.ConvID) // im-server 说授权没了（过期、撤销）：解除绑定，页面重新申请

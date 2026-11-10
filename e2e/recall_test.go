@@ -362,6 +362,8 @@ func (c *wsClient) wait2() map[string]any {
 // 没有权限点 403 / 4030；没有这个会话的隔离授权（没申请、只有普通授权、换了浏览器会话、过期）403 / 4039，都不调用 im-server；
 // 有授权 200，字节和原图、缩略图一致，固定 attachment、nosniff、no-store，CSP 不放宽；console 审计有 fileId、msgId、授权前 8 位，
 // 两边审计、console 库、日志、URL 都没有文件名；普通调用方直接调 im-server 403 / 4030。
+// grantId（PRD-chat v1.6 第 11.6 节，P-44 ④）：转给 im-server 的请求体带这个浏览器会话的 grantId，URL、日志、console 审计里没有完整的 grantId；
+// console 记的 grantId 换成别的（im-server 那边同一操作人仍有有效隔离授权）时 im-server 403 / 4039，绑定作废。
 func TestTC_RCL_04_09_FetchViaConsole(t *testing.T) {
 	const mark = "ZXQ-RCL-FETCH"
 	w := newRecallWorld(t)
@@ -428,6 +430,19 @@ func TestTC_RCL_04_09_FetchViaConsole(t *testing.T) {
 	}
 	if fetches() != 2 {
 		t.Errorf("im-server fetch calls = %d", fetches())
+	}
+	var gid string
+	if err := w.db.QueryRow(context.Background(), `SELECT grant_id FROM biz.msg_grants WHERE conv_id = $1 AND quarantine`, conv).Scan(&gid); err != nil || len(gid) <= 8 {
+		t.Fatalf("quarantine binding: %q %v", gid, err)
+	}
+	for _, call := range w.im.find("POST", "/admin/files/"+fileID+"/fetch") {
+		var sent map[string]any
+		if err := json.Unmarshal([]byte(call.Body), &sent); err != nil || sent["grantId"] != gid {
+			t.Errorf("im-server fetch body = %s (want grantId %s)", call.Body, gid)
+		}
+		if strings.Contains(call.Path, gid) {
+			t.Errorf("grantId in the im-server URL: %s", call.Path)
+		}
 	}
 	// 没有撤回的文件：im-server 404 / 4048 透传。
 	expect(t, "not recalled", mod.do("POST", "/console/api/files/"+keepID+"/fetch", map[string]any{"convId": conv, "msgId": keepMsg}), 404, 4048)
@@ -506,5 +521,34 @@ func TestTC_RCL_04_09_FetchViaConsole(t *testing.T) {
 	}
 	if r := mod.do("POST", path, req); r.status != http.StatusOK {
 		t.Errorf("fetch after audit recovered = %d", r.status)
+	}
+
+	// 8. im-server 按 grantId 校验（v1.6）：console 记的 grantId 换成一个不存在的，im-server 那边 mod1 对这个会话仍有有效隔离授权，
+	// 按会话查会放行；带 grantId 必须 403 / 4039。请求到了 im-server，绑定作废。
+	var regrant string
+	if err := w.db.QueryRow(context.Background(), `SELECT grant_id FROM biz.msg_grants WHERE conv_id = $1 AND quarantine`, conv).Scan(&regrant); err != nil {
+		t.Fatal(err)
+	}
+	bogus := "0193a7c4-0000-7000-8000-00000000beef"
+	ownerExec(t, w.owner, `UPDATE biz.msg_grants SET grant_id = $1 WHERE conv_id = $2 AND quarantine`, bogus, conv)
+	n = fetches()
+	expect(t, "wrong grantId", mod.do("POST", path, req), 403, 4039)
+	if fetches() != n+1 {
+		t.Errorf("wrong grantId did not reach im-server: %d", fetches()-n)
+	}
+	if calls := w.im.find("POST", "/admin/files/"+fileID+"/fetch"); !strings.Contains(calls[len(calls)-1].Body, bogus) {
+		t.Errorf("last im-server fetch body = %s", calls[len(calls)-1].Body)
+	}
+	if err := w.db.QueryRow(context.Background(), `SELECT count(*) FROM biz.msg_grants WHERE conv_id = $1 AND quarantine`, conv).Scan(&left); err != nil || left != 0 {
+		t.Errorf("binding kept after im-server 4039: %d %v", left, err)
+	}
+	// 完整的 grantId 不进日志和 console 审计（审计只有前 8 位）。
+	for _, id := range []string{gid, regrant} {
+		if strings.Contains(w.logs.String(), id) || strings.Contains(w.proc.logs.String(), id) {
+			t.Errorf("grantId %s in the logs", id[:8])
+		}
+		if strings.Contains(fmt.Sprint(w.auditRows(`action = 'msg.file.fetch'`)), id) {
+			t.Errorf("full grantId %s in the console fetch audit", id[:8])
+		}
 	}
 }
