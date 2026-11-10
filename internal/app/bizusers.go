@@ -23,7 +23,28 @@ func (c *rc) listUsers() {
 		c.fail(apierr.New(apierr.BadRequest, "enter a keyword or filter by official accounts"))
 		return
 	}
-	c.imRead("/admin/users", q)
+	var raw struct {
+		Users      []map[string]json.RawMessage `json:"users"`
+		NextCursor json.RawMessage              `json:"nextCursor"`
+	}
+	if err := c.im(http.MethodGet, "/admin/users", q, nil, &raw); err != nil {
+		c.failErr("list users", err)
+		return
+	}
+	users := make([]map[string]any, 0, len(raw.Users))
+	for _, u := range raw.Users {
+		row, err := pickUser(u, userListFields, userListBanFields)
+		if err != nil {
+			c.failErr("list users ban", err)
+			return
+		}
+		users = append(users, row)
+	}
+	out := map[string]any{"users": users}
+	if raw.NextCursor != nil {
+		out["nextCursor"] = raw.NextCursor
+	}
+	c.ok(out)
 }
 
 func (c *rc) userPath() (string, string, bool) {
@@ -43,6 +64,30 @@ var userDetailFields = []string{"userId", "nickname", "avatar", "createdAt", "of
 
 // userBanFields 是封禁对象里放出去的字段（UserRow.ban：到期、理由、操作人、时间）。
 var userBanFields = []string{"until", "reason", "by", "at"}
+
+// userListFields、userListBanFields 是用户列表每一行放出去的字段（console-chat 问题 20 的列表部分）：
+// 依据是 tianting-admin 的 Users 页实际读的 UserRow 字段（用户、昵称、资料创建时间、在线、官方、封禁到期、禁言）。
+// 列表不显示头像、封禁理由和操作人，这些只在详情里有。外层只有 users 和翻页用的 nextCursor（useCursorList）。
+var (
+	userListFields    = []string{"userId", "nickname", "createdAt", "online", "official", "ban", "mutedUntil"}
+	userListBanFields = []string{"until"}
+)
+
+// pickUser 按白名单挑一个用户对象；ban 不是 null 时里面也按白名单挑。ban 不是对象时报错：不能当成"没有封禁"显示。
+func pickUser(raw map[string]json.RawMessage, fields, banFields []string) (map[string]any, error) {
+	out := pickFields(raw, fields)
+	if _, listed := out["ban"]; !listed {
+		return out, nil
+	}
+	if ban := raw["ban"]; string(ban) != "null" {
+		var b map[string]json.RawMessage
+		if err := json.Unmarshal(ban, &b); err != nil {
+			return nil, err
+		}
+		out["ban"] = pickFields(b, banFields)
+	}
+	return out, nil
+}
 
 // pickFields 只保留 keys 里的键，值原样（含 null）。
 func pickFields(in map[string]json.RawMessage, keys []string) map[string]any {
@@ -66,14 +111,10 @@ func (c *rc) getUser() {
 		c.failErr("get user", err)
 		return
 	}
-	out := pickFields(raw, userDetailFields)
-	if ban, ok := raw["ban"]; ok && string(ban) != "null" {
-		var b map[string]json.RawMessage
-		if err := json.Unmarshal(ban, &b); err != nil {
-			c.failErr("get user ban", err) // 不是对象：不能当成"没有封禁"显示
-			return
-		}
-		out["ban"] = pickFields(b, userBanFields)
+	out, err := pickUser(raw, userDetailFields, userBanFields)
+	if err != nil {
+		c.failErr("get user ban", err)
+		return
 	}
 	c.mergeAccountInfo(id, out)
 	c.ok(out)

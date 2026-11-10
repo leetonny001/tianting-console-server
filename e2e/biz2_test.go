@@ -80,8 +80,9 @@ func TestBatch2(t *testing.T) {
 		if ban, _ := got.body["ban"].(map[string]any); ban == nil || ban["reason"] != "spam spam" {
 			t.Errorf("detail = %s", got.raw)
 		}
+		// 列表显示封禁和到期（Users 页只读 ban.until）；理由只在详情里（console-chat 问题 20，列表按白名单输出）。
 		list := mod.do("GET", "/console/api/users?q="+u, nil)
-		if !strings.Contains(list.raw, `"reason":"spam spam"`) {
+		if !strings.Contains(list.raw, `"ban":{"until":`) || strings.Contains(list.raw, "spam spam") {
 			t.Errorf("list = %s", list.raw)
 		}
 		err := b.sysDo("POST", "/admin/users/token", map[string]any{"userId": u}, nil)
