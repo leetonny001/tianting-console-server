@@ -203,3 +203,49 @@ func TestRawBodyIsSentAsIs(t *testing.T) {
 		t.Errorf("body = %s", got)
 	}
 }
+
+// CS-202：Stream 签名和 Do 一样；2xx 原样给出响应体（大于 Do 的 16MB 上限也行）；非 2xx 透传错误码；
+// 超时只算到响应头，响应体慢慢写不算超时。
+func TestStream(t *testing.T) {
+	const big = 17 << 20
+	cl := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-IM-Signature") == "" || r.Header.Get("X-IM-Operator") != "admin:a1" {
+			w.WriteHeader(401)
+			return
+		}
+		switch r.URL.Path {
+		case "/big":
+			w.Header().Set("Content-Type", "image/png")
+			w.WriteHeader(200)
+			chunk := make([]byte, 1<<20)
+			for range big >> 20 {
+				_, _ = w.Write(chunk)
+				w.(http.Flusher).Flush()
+				time.Sleep(5 * time.Millisecond) // 总时长超过 Timeout，但每次都有数据
+			}
+		case "/denied":
+			w.WriteHeader(403)
+			_, _ = w.Write([]byte(`{"code":4039,"msg":"grant required"}`))
+		case "/hang":
+			time.Sleep(300 * time.Millisecond)
+		}
+	}, func(c *Config) { c.Timeout = 60 * time.Millisecond })
+	call := Call{Operator: "admin:a1", RequestID: "r1"}
+	resp, err := cl.Stream(context.Background(), call, "POST", "/big", nil, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || n != big || resp.Header.Get("Content-Type") != "image/png" {
+		t.Errorf("big: %d bytes, %v", n, err)
+	}
+	_, err = cl.Stream(context.Background(), call, "POST", "/denied", nil, map[string]any{})
+	var e *apierr.Error
+	if !errors.As(err, &e) || e.Code != 4039 {
+		t.Errorf("denied = %v", err)
+	}
+	if _, err := cl.Stream(context.Background(), call, "POST", "/hang", nil, map[string]any{}); !errors.Is(err, ErrResultUnknown) {
+		t.Errorf("hang = %v", err)
+	}
+}

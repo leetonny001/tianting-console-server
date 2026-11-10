@@ -80,6 +80,88 @@ type RawBody []byte
 
 // Do 发送请求，把 2xx 响应解到 out（可以为 nil）。非 2xx 返回 *apierr.Error，错误码原样透传。
 func (cl *Client) Do(ctx context.Context, call Call, method, path string, query url.Values, body, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, cl.c.Timeout)
+	defer cancel()
+	req, err := cl.newRequest(ctx, call, method, path, query, body)
+	if err != nil {
+		return err
+	}
+	if err := cl.wait(ctx); err != nil {
+		return err
+	}
+	resp, err := cl.c.HTTP.Do(req)
+	if err != nil {
+		return sendErr(ctx, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		// 响应读到一半断了：im-server 已经开始回应，操作很可能已经生效。
+		return fmt.Errorf("%w: read response: %w", ErrResultUnknown, err)
+	}
+	if cl.c.DropResponse != nil && cl.c.DropResponse.Load() && method != http.MethodGet {
+		return fmt.Errorf("%w: response dropped by the test fault", ErrResultUnknown)
+	}
+	if resp.StatusCode >= 300 {
+		return errorOf(resp.StatusCode, data)
+	}
+	if out == nil || len(data) == 0 {
+		return nil
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Stream 发送请求，2xx 时返回响应（调用方读完 Body 并 Close），响应体不经过内存缓冲、不落盘（CS-202 文件代理）。
+// 超时只管到收到响应头为止：文件可能很大，读响应体受 ctx 控制（浏览器断开就停）。非 2xx 返回 *apierr.Error。
+// 这是只读调用，不受 DropResponse 影响（和 GET 一样）。
+func (cl *Client) Stream(ctx context.Context, call Call, method, path string, query url.Values, body any) (*http.Response, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	req, err := cl.newRequest(ctx, call, method, path, query, body)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if err := cl.wait(ctx); err != nil {
+		cancel()
+		return nil, err
+	}
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(cl.c.Timeout, func() { timedOut.Store(true); cancel() })
+	resp, err := cl.c.HTTP.Do(req)
+	if !timer.Stop() || timedOut.Load() {
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		cancel()
+		return nil, ErrResultUnknown
+	}
+	if err != nil {
+		cancel()
+		return nil, sendErr(ctx, err)
+	}
+	if resp.StatusCode >= 300 {
+		defer cancel()
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		return nil, errorOf(resp.StatusCode, data)
+	}
+	resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+type cancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
+}
+
+// newRequest 构造签名请求。私钥只在这里用，不进日志。
+func (cl *Client) newRequest(ctx context.Context, call Call, method, path string, query url.Values, body any) (*http.Request, error) {
 	var raw []byte
 	switch b := body.(type) {
 	case nil:
@@ -88,7 +170,7 @@ func (cl *Client) Do(ctx context.Context, call Call, method, path string, query 
 	default:
 		var err error
 		if raw, err = json.Marshal(body); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	rawQuery := ""
@@ -97,7 +179,7 @@ func (cl *Client) Do(ctx context.Context, call Call, method, path string, query 
 	}
 	nonceBytes := make([]byte, 18)
 	if _, err := rand.Read(nonceBytes); err != nil {
-		return err
+		return nil, err
 	}
 	ts := strconv.FormatInt(cl.c.Clock.Now().UnixMilli(), 10)
 	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
@@ -109,20 +191,9 @@ func (cl *Client) Do(ctx context.Context, call Call, method, path string, query 
 	if rawQuery != "" {
 		target += "?" + rawQuery
 	}
-	ctx, cancel := context.WithTimeout(ctx, cl.c.Timeout)
-	defer cancel()
-	if cl.c.Latency != nil {
-		if ms := cl.c.Latency.Load(); ms > 0 {
-			select {
-			case <-time.After(time.Duration(ms) * time.Millisecond):
-			case <-ctx.Done():
-				return ErrResultUnknown
-			}
-		}
-	}
 	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(raw))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	h := req.Header
 	h.Set("Content-Type", "application/json")
@@ -139,37 +210,40 @@ func (cl *Client) Do(ctx context.Context, call Call, method, path string, query 
 	if cl.c.Node != "" {
 		h.Set("X-IM-Target-Node", cl.c.Node)
 	}
-	resp, err := cl.c.HTTP.Do(req)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return ErrResultUnknown
+	return req, nil
+}
+
+// wait 是测试模式的人为延迟。
+func (cl *Client) wait(ctx context.Context) error {
+	if cl.c.Latency != nil {
+		if ms := cl.c.Latency.Load(); ms > 0 {
+			select {
+			case <-time.After(time.Duration(ms) * time.Millisecond):
+			case <-ctx.Done():
+				return ErrResultUnknown
+			}
 		}
-		// 连接中断时请求可能已经到了 im-server：一律算"结果未知"，由对账确认。
-		return fmt.Errorf("%w: %w", ErrResultUnknown, err)
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil {
-		// 响应读到一半断了：im-server 已经开始回应，操作很可能已经生效。
-		return fmt.Errorf("%w: read response: %w", ErrResultUnknown, err)
+	return nil
+}
+
+func sendErr(ctx context.Context, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return ErrResultUnknown
 	}
-	if cl.c.DropResponse != nil && cl.c.DropResponse.Load() && method != http.MethodGet {
-		return fmt.Errorf("%w: response dropped by the test fault", ErrResultUnknown)
+	// 连接中断时请求可能已经到了 im-server：一律算"结果未知"，由对账确认。
+	return fmt.Errorf("%w: %w", ErrResultUnknown, err)
+}
+
+func errorOf(status int, data []byte) error {
+	var e apierr.Error
+	if json.Unmarshal(data, &e) == nil && e.Code != 0 {
+		return &e
 	}
-	if resp.StatusCode >= 300 {
-		var e apierr.Error
-		if json.Unmarshal(data, &e) == nil && e.Code != 0 {
-			return &e
-		}
-		if resp.StatusCode == http.StatusNotFound { // 路由没有注册（AC-ADM-15-7）
-			return apierr.New(apierr.NotFound, "not found")
-		}
-		return apierr.New(apierr.Internal, "im-server returned HTTP %d", resp.StatusCode)
+	if status == http.StatusNotFound { // 路由没有注册（AC-ADM-15-7）
+		return apierr.New(apierr.NotFound, "not found")
 	}
-	if out == nil || len(data) == 0 {
-		return nil
-	}
-	return json.Unmarshal(data, out)
+	return apierr.New(apierr.Internal, "im-server returned HTTP %d", status)
 }
 
 // Request 是待签名的请求（字段和 tianting-server 的 adminauth 一致，由 vectors 保证）。

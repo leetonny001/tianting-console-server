@@ -339,17 +339,22 @@ func grantPrefix(id string) string {
 	return id
 }
 
-// bodyMessage 是正文页的一条消息。独立类型：只透传这些字段。
+// bodyMessage 是正文页的一条消息。独立类型：只透传这些字段。body 原样透传（quote、mentions 在 body 里，C4）。
+// 后台版序列化（F-RCL-04 规则 3，CS-204）：deleted 只表示后台删除；撤回的是 deleted=false、recalled=true，
+// 普通正文授权没有 body，隔离授权有原文。
 type bodyMessage struct {
-	Seq       int64           `json:"seq"`
-	MsgID     string          `json:"msgId"`
-	From      string          `json:"from"`
-	Type      string          `json:"type"`
-	TS        int64           `json:"ts"`
-	Body      *map[string]any `json:"body,omitempty"`
-	Deleted   bool            `json:"deleted,omitempty"`
-	DeletedAt int64           `json:"deletedAt,omitempty"`
-	DeletedBy string          `json:"deletedBy,omitempty"`
+	Seq        int64           `json:"seq"`
+	MsgID      string          `json:"msgId"`
+	From       string          `json:"from"`
+	Type       string          `json:"type"`
+	TS         int64           `json:"ts"`
+	Body       *map[string]any `json:"body,omitempty"`
+	Deleted    bool            `json:"deleted,omitempty"`
+	DeletedAt  int64           `json:"deletedAt,omitempty"`
+	DeletedBy  string          `json:"deletedBy,omitempty"`
+	Recalled   bool            `json:"recalled,omitempty"`
+	RecalledAt int64           `json:"recalledAt,omitempty"`
+	RecalledBy string          `json:"recalledBy,omitempty"`
 }
 
 // readMessageBody：没有该会话有效授权（未申请、过期、换了会话、换了浏览器会话）一律 403 / 4039。

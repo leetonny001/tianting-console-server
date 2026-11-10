@@ -49,6 +49,8 @@ func businessRoutes() []route {
 		// 这两个路由的权限按请求内容再判断（grantPerm）：单聊 msg.read.c2c、隔离原文 msg.quarantine.read。
 		{method: "POST", path: "/console/api/messages/grants", perm: "msg.read.group", sensitive: true, action: "msg.read.grant", h: (*rc).createMsgGrant},
 		{method: "POST", path: "/console/api/messages/body", perm: "msg.read.group", sensitive: true, action: "msg.read.page", h: (*rc).readMessageBody},
+		// 经代理取被撤回、被后台删除的文件（CS-202，C4 只有隔离路径）：流式透传、固定 attachment。
+		{method: "POST", path: "/console/api/files/{fileId}/fetch", perm: "msg.quarantine.read", sensitive: true, action: actionFileFetch, h: (*rc).fetchFile},
 		// 系统通知（CS-044、CS-045）
 		{method: "GET", path: "/console/api/push/templates", perm: "push.user", h: (*rc).listPushTemplates},
 		{method: "POST", path: "/console/api/push/targets/validate", perm: "push.user", h: (*rc).validatePushTargets},

@@ -1074,7 +1074,10 @@ func TestCON09ReconcileBatches(t *testing.T) {
 
 // 矩阵（AC-ADM-05-1）：路由表 × 5 个单角色。路由表是同一份数据，新路由没写样本这里就失败。
 func TestAdminMatrix(t *testing.T) {
-	b := newBizWorld(t)
+	// 撤回、文件打开（CS-202 的取文件样本要撤回的图片）。[C 钟] 从真实时间前 20 分钟开始：矩阵里动态码步长推进得多，
+	// 取文件时 console 要拿 im-server 给的授权到期时间（真实时间）和自己的钟比。
+	rw := newRecallWorld(t, 20*time.Minute)
+	b := rw.bizWorld
 	super := b.super("adm1")
 	roles := map[string]*user{
 		"super_admin": super, "operator": super.create("op1", "operator"), "support": super.create("kf1", "support"),
@@ -1209,6 +1212,16 @@ func TestAdminMatrix(t *testing.T) {
 			c.do("POST", "/console/api/messages/grants", map[string]any{"convId": "group:" + g, "ticket": "T-1", "reason": "matrix test", "otp": c.otp()})
 			return c.do("POST", "/console/api/messages/body", map[string]any{"convId": "group:" + g})
 		},
+		"POST /console/api/files/{fileId}/fetch": func(c *user) reply {
+			// 每次一个新群、一张撤回的图片；有权限的先申请隔离授权（没有权限的申请也是 4030，这里不看）。
+			g := newGroup()
+			ws := b.dial(u, "web")
+			defer func() { _ = ws.ws.CloseNow() }()
+			fileID, msgID, _, _ := rw.recalledImage(ws, u, "group:"+g, "matrix.png")
+			b.tick()
+			c.do("POST", "/console/api/messages/grants", map[string]any{"convId": "group:" + g, "ticket": "T-1", "reason": "matrix test", "otp": c.otp(), "quarantine": true})
+			return c.do("POST", "/console/api/files/"+fileID+"/fetch", map[string]any{"convId": "group:" + g, "msgId": msgID})
+		},
 		"GET /console/api/push/templates": func(c *user) reply { return c.do("GET", "/console/api/push/templates", nil) },
 		"POST /console/api/push/targets/validate": func(c *user) reply {
 			return c.upload("/console/api/push/targets/validate", "userId\n"+u+"\n", nil)
@@ -1307,29 +1320,30 @@ func TestAdminMatrix(t *testing.T) {
 var matrixNotice = map[string]any{"title": "matrix", "text": "matrix"}
 
 var permMatrix = map[string]map[string]bool{
-	"user.read":         {"super_admin": true, "operator": true, "support": true, "moderator": true},
-	"user.import":       {"operator": true},
-	"account.invite":    {"operator": true},
-	"user.kick":         {"support": true, "moderator": true},
-	"user.sessions":     {"support": true, "moderator": true},
-	"user.official":     {"operator": true},
-	"social.read":       {"super_admin": true, "operator": true, "support": true, "moderator": true},
-	"social.write":      {"operator": true},
-	"social.settings":   {"operator": true},
-	"group.read":        {"super_admin": true, "operator": true, "support": true, "moderator": true},
-	"group.write":       {"operator": true},
-	"group.owner":       {"operator": true},
-	"group.dissolve":    {"operator": true, "moderator": true},
-	"msg.meta":          {"support": true, "moderator": true},
-	"mute.write":        {"support": true, "moderator": true},
-	"user.ban":          {"moderator": true},
-	"msg.delete":        {"moderator": true},
-	"msg.read.group":    {"moderator": true},
-	"push.user":         {"operator": true},
-	"push.all.request":  {"operator": true},
-	"push.all.approve":  {"super_admin": true},
-	"push.records.read": {"super_admin": true, "auditor": true},
-	"stats.read":        {"super_admin": true, "operator": true},
+	"user.read":           {"super_admin": true, "operator": true, "support": true, "moderator": true},
+	"user.import":         {"operator": true},
+	"account.invite":      {"operator": true},
+	"user.kick":           {"support": true, "moderator": true},
+	"user.sessions":       {"support": true, "moderator": true},
+	"user.official":       {"operator": true},
+	"social.read":         {"super_admin": true, "operator": true, "support": true, "moderator": true},
+	"social.write":        {"operator": true},
+	"social.settings":     {"operator": true},
+	"group.read":          {"super_admin": true, "operator": true, "support": true, "moderator": true},
+	"group.write":         {"operator": true},
+	"group.owner":         {"operator": true},
+	"group.dissolve":      {"operator": true, "moderator": true},
+	"msg.meta":            {"support": true, "moderator": true},
+	"mute.write":          {"support": true, "moderator": true},
+	"user.ban":            {"moderator": true},
+	"msg.delete":          {"moderator": true},
+	"msg.read.group":      {"moderator": true},
+	"msg.quarantine.read": {"moderator": true},
+	"push.user":           {"operator": true},
+	"push.all.request":    {"operator": true},
+	"push.all.approve":    {"super_admin": true},
+	"push.records.read":   {"super_admin": true, "auditor": true},
+	"stats.read":          {"super_admin": true, "operator": true},
 }
 
 // AC-ADM-15-7：im-server 没有注册这个接口。

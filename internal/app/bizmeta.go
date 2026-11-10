@@ -33,6 +33,10 @@ type messageMeta struct {
 	Deleted   bool   `json:"deleted,omitempty"`
 	DeletedAt int64  `json:"deletedAt,omitempty"`
 	DeletedBy string `json:"deletedBy,omitempty"`
+	// C4：撤回标记、时间、撤回人 userId（im-server 的值，F-RCL-04 规则 3，CS-204）。撤回的没有 fileSize（im-server 不返回）。
+	Recalled   bool   `json:"recalled,omitempty"`
+	RecalledAt int64  `json:"recalledAt,omitempty"`
+	RecalledBy string `json:"recalledBy,omitempty"`
 }
 
 type metaPage struct {
