@@ -1076,7 +1076,8 @@ func TestCON09ReconcileBatches(t *testing.T) {
 func TestAdminMatrix(t *testing.T) {
 	// 撤回、文件打开（CS-202 的取文件样本要撤回的图片）。[C 钟] 从真实时间前 20 分钟开始：矩阵里动态码步长推进得多，
 	// 取文件时 console 要拿 im-server 给的授权到期时间（真实时间）和自己的钟比。
-	rw := newRecallWorld(t, 20*time.Minute)
+	// C6 的样本要举报（IM_MOD_ENABLED=1）：每个角色每个举报路由一条，举报人的每日次数放宽。
+	rw := newModWorld(t, 20*time.Minute, "IM_REPORT_DAILY=1000")
 	b := rw.bizWorld
 	super := b.super("adm1")
 	roles := map[string]*user{
@@ -1097,6 +1098,10 @@ func TestAdminMatrix(t *testing.T) {
 			t.Fatal(err)
 		}
 		return g
+	}
+	newWord := func() string {
+		r := roles["operator"].do("POST", "/console/api/moderation/words", map[string]any{"word": next("ZXQWORD")})
+		return fmt.Sprint(fnum(asMap(t, "word", r.body["word"])["wordId"]))
 	}
 	samples := map[string]func(*user) reply{
 		"GET /console/api/stats": func(c *user) reply { return c.do("GET", "/console/api/stats", nil) },
@@ -1222,7 +1227,22 @@ func TestAdminMatrix(t *testing.T) {
 			c.do("POST", "/console/api/messages/grants", map[string]any{"convId": "group:" + g, "ticket": "T-1", "reason": "matrix test", "otp": c.otp(), "quarantine": true})
 			return c.do("POST", "/console/api/files/"+fileID+"/fetch", map[string]any{"convId": "group:" + g, "msgId": msgID})
 		},
-		"GET /console/api/push/templates": func(c *user) reply { return c.do("GET", "/console/api/push/templates", nil) },
+		// C6（CS-206～CS-208）
+		"GET /console/api/moderation/words": func(c *user) reply { return c.do("GET", "/console/api/moderation/words", nil) },
+		"POST /console/api/moderation/words": func(c *user) reply {
+			return c.do("POST", "/console/api/moderation/words", map[string]any{"word": next("ZXQWORD")})
+		},
+		"POST /console/api/moderation/words/import": func(c *user) reply {
+			return c.do("POST", "/console/api/moderation/words/import", map[string]any{"words": []string{next("ZXQWORD")}})
+		},
+		"PATCH /console/api/moderation/words/{id}": func(c *user) reply {
+			return c.do("PATCH", "/console/api/moderation/words/"+newWord(), map[string]any{"state": "disabled"})
+		},
+		"DELETE /console/api/moderation/words/{id}": func(c *user) reply {
+			return c.do("DELETE", "/console/api/moderation/words/"+newWord(), nil)
+		},
+		"GET /console/api/moderation/hits": func(c *user) reply { return c.do("GET", "/console/api/moderation/hits?userId="+u, nil) },
+		"GET /console/api/push/templates":  func(c *user) reply { return c.do("GET", "/console/api/push/templates", nil) },
 		"POST /console/api/push/targets/validate": func(c *user) reply {
 			return c.upload("/console/api/push/targets/validate", "userId\n"+u+"\n", nil)
 		},
@@ -1344,6 +1364,9 @@ var permMatrix = map[string]map[string]bool{
 	"push.all.approve":    {"super_admin": true},
 	"push.records.read":   {"super_admin": true, "auditor": true},
 	"stats.read":          {"super_admin": true, "operator": true},
+	// C6（PRD-admin v1.5 5.2 节，PRD-chat 第 14.1 节）
+	"moderation.words": {"operator": true, "moderator": true},
+	"report.read":      {"moderator": true},
 }
 
 // AC-ADM-15-7：im-server 没有注册这个接口。

@@ -51,6 +51,13 @@ func businessRoutes() []route {
 		{method: "POST", path: "/console/api/messages/body", perm: "msg.read.group", sensitive: true, action: "msg.read.page", h: (*rc).readMessageBody},
 		// 经代理取被撤回、被后台删除的文件（CS-202，C4 只有隔离路径）：流式透传、固定 attachment。
 		{method: "POST", path: "/console/api/files/{fileId}/fetch", perm: "msg.quarantine.read", sensitive: true, action: actionFileFetch, h: (*rc).fetchFile},
+		// 词库（CS-206，PRD-chat F-MOD-01）：审计不记词内容。命中次数只给有 report.read 的（P-48 ③，console-chat 第 27 条）。
+		{method: "GET", path: "/console/api/moderation/words", perm: "moderation.words", h: (*rc).listWords},
+		{method: "POST", path: "/console/api/moderation/words", perm: "moderation.words", action: actionWordAdd, h: (*rc).addWord},
+		{method: "POST", path: "/console/api/moderation/words/import", perm: "moderation.words", action: actionWordImport, h: (*rc).importWords},
+		{method: "PATCH", path: "/console/api/moderation/words/{id}", perm: "moderation.words", action: actionWordUpdate, h: (*rc).patchWord},
+		{method: "DELETE", path: "/console/api/moderation/words/{id}", perm: "moderation.words", action: actionWordDelete, h: (*rc).deleteWord},
+		{method: "GET", path: "/console/api/moderation/hits", perm: "report.read", action: actionHitsView, h: (*rc).getHits},
 		// 系统通知（CS-044、CS-045）
 		{method: "GET", path: "/console/api/push/templates", perm: "push.user", h: (*rc).listPushTemplates},
 		{method: "POST", path: "/console/api/push/targets/validate", perm: "push.user", h: (*rc).validatePushTargets},

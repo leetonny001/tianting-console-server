@@ -508,8 +508,8 @@ func startRealIM(t *testing.T) (string, ed25519.PrivateKey) {
 // msgReadKey 是测试里 console-msgread 的私钥。
 var msgReadKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
 
-// mainCredentialScopes 是主凭证 console 的 scope（PRD-admin F-KEY-02 规则 4，PRD-chat 第 14.1 节）：手写一份，和部署示例互相校验（TC-ACC-05-08）。
-var mainCredentialScopes = []string{"user.read", "user.write", "user.kick", "user.sessions", "group.read", "group.write", "group.dissolve", "msg.meta", "audit.read", "social.settings", "social.friends", "user.ban", "msg.delete", "mute.write", "push.user", "push.all", "stats.read", "account.invite"}
+// mainCredentialScopes 是主凭证 console 的 scope（PRD-admin F-KEY-02 规则 4，PRD-chat 第 14.1 节；C6 加 moderation.words、report.read、report.handle）：手写一份，和部署示例互相校验（TC-ACC-05-08）。
+var mainCredentialScopes = []string{"user.read", "user.write", "user.kick", "user.sessions", "group.read", "group.write", "group.dissolve", "msg.meta", "audit.read", "social.settings", "social.friends", "user.ban", "msg.delete", "mute.write", "push.user", "push.all", "stats.read", "account.invite", "moderation.words", "report.read", "report.handle"}
 
 // allConsoleScopes 多一个 token.issue：只是测试自己要签 token 连 WebSocket，生产的主凭证永远没有。
 var allConsoleScopes = append([]string{"token.issue"}, mainCredentialScopes...)
@@ -562,7 +562,7 @@ func startIMProc(t *testing.T, scopes []string, extraEnv ...string) *imProc {
 		"scopes": scopes, "pushTypes": []string{"notice", "activity"},
 	}, {
 		"id": "console-msgread", "alg": "ed25519", "publicKey": base64.StdEncoding.EncodeToString(msgReadKey.Public().(ed25519.PublicKey)),
-		"scopes": []string{"msg.body.group", "msg.body.c2c", "msg.quarantine"}, "bodyAccess": true,
+		"scopes": []string{"msg.body.group", "msg.body.c2c", "msg.quarantine", "report.evidence"}, "bodyAccess": true,
 	}})
 	callersFile := filepath.Join(dir, "callers.json")
 	if err := os.WriteFile(callersFile, callers, 0o600); err != nil {

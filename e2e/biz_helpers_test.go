@@ -28,6 +28,7 @@ import (
 // imCall 是 console 发给 im-server 的一次请求。
 type imCall struct {
 	Method, Path, RequestID, Body string
+	Caller                        string // X-IM-Caller：主凭证 console 还是正文调用方 console-msgread
 }
 
 // imProxy 夹在 console 和真实 im-server 之间：记录请求和响应，可以注入失败。签名不含 Host，转发不影响校验。
@@ -42,6 +43,8 @@ type imProxy struct {
 	delay time.Duration
 	// rewrite 改写 im-server 的响应：模拟它多返回字段。
 	rewrite func(path string, body []byte) []byte
+	// rewriteHeader 改写 im-server 的响应头（比如文件的 Content-Type）。
+	rewriteHeader func(path string, h http.Header)
 }
 
 func newIMProxy(t *testing.T, adminAddr string) *imProxy {
@@ -61,8 +64,11 @@ func newIMProxy(t *testing.T, adminAddr string) *imProxy {
 		}
 		p.mu.Lock()
 		p.replies = append(p.replies, string(data))
-		delay, rewrite := p.delay, p.rewrite
+		delay, rewrite, rewriteHeader := p.delay, p.rewrite, p.rewriteHeader
 		p.mu.Unlock()
+		if rewriteHeader != nil {
+			rewriteHeader(r.Request.URL.Path, r.Header)
+		}
 		if rewrite != nil {
 			data = rewrite(r.Request.URL.Path, data)
 			r.ContentLength = int64(len(data))
@@ -77,7 +83,7 @@ func newIMProxy(t *testing.T, adminAddr string) *imProxy {
 	p.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		c := imCall{r.Method, r.URL.Path, r.Header.Get("X-Request-Id"), string(body)}
+		c := imCall{r.Method, r.URL.Path, r.Header.Get("X-Request-Id"), string(body), r.Header.Get("X-IM-Caller")}
 		p.mu.Lock()
 		p.calls = append(p.calls, c)
 		inject := p.inject

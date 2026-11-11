@@ -36,6 +36,9 @@ func TestAdminMatrix(t *testing.T) {
 		"push.all.approve":    {"super_admin"},
 		"push.records.read":   {"super_admin", "auditor"},
 		"stats.read":          {"super_admin", "operator"},
+		// C6（PRD-admin v1.5 5.2 节）
+		"moderation.words": {"operator", "moderator"},
+		"report.read":      {"moderator"},
 	} {
 		var got []string
 		for r := range Admin.Roles {

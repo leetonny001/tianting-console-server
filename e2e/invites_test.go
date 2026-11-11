@@ -647,8 +647,8 @@ func TestTC_ACC_05_08_ConsoleScopeAndCalls(t *testing.T) {
 		if credentialWords.MatchString(s) {
 			t.Errorf("scope %s", s)
 		}
-		// 永远不含这些（F-KEY-02 规则 4）；词库、举报的 scope 属于 C6。
-		if s == "token.issue" || s == "test" || strings.HasPrefix(s, "msg.body") || s == "msg.quarantine" || strings.HasPrefix(s, "moderation.") || strings.HasPrefix(s, "report.") {
+		// 永远不含这些（F-KEY-02 规则 4）；C6 的词库、举报 scope 在主凭证上，证据（正文类）只在 console-msgread（AC-MOD-04-4、04-8）。
+		if s == "token.issue" || s == "test" || strings.HasPrefix(s, "msg.body") || s == "msg.quarantine" || s == "report.evidence" {
 			t.Errorf("scope %s must not be on the main credential", s)
 		}
 	}
@@ -677,6 +677,16 @@ func TestTC_ACC_05_08_ConsoleScopeAndCalls(t *testing.T) {
 		got, want := slices.Sorted(slices.Values(callers[i].Scopes)), slices.Sorted(slices.Values(mainCredentialScopes))
 		if !slices.Equal(got, want) {
 			t.Errorf("deploy example scopes = %v, want %v", got, want)
+		}
+		// C6：证据 scope 只在正文调用方（PRD-chat 第 14.1 节，BE-498 第 2 条）。
+		j := slices.IndexFunc(callers, func(c struct {
+			ID     string   `json:"id"`
+			Scopes []string `json:"scopes"`
+		}) bool {
+			return c.ID == "console-msgread"
+		})
+		if j < 0 || !slices.Contains(callers[j].Scopes, "report.evidence") {
+			t.Errorf("console-msgread in the deploy example lacks report.evidence: %v", callers)
 		}
 	} else {
 		t.Logf("deploy example not checked: %v", err)
