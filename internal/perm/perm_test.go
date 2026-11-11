@@ -40,6 +40,7 @@ func TestAdminMatrix(t *testing.T) {
 		"moderation.words": {"operator", "moderator"},
 		"report.read":      {"moderator"},
 		"report.handle":    {"moderator"},
+		"report.evidence":  {"moderator"},
 	} {
 		var got []string
 		for r := range Admin.Roles {

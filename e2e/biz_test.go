@@ -1099,7 +1099,7 @@ func TestAdminMatrix(t *testing.T) {
 		}
 		return g
 	}
-	// C6 样本：rs 在群里发消息，rr 举报。看举报单共用一条；结案每次一条新的（只能结一次）。
+	// C6 样本：u 在群里发消息，u+"b" 举报。看举报单、申请授权、读证据共用一条；结案每次一条新的（只能结一次）；取文件用一条图片举报。
 	// 用单独的两个用户：别的样本会把 u 下线、把 u+"b" 封禁。
 	rs, rr := u+"rs", u+"rr"
 	b.users(rs, rr)
@@ -1109,6 +1109,9 @@ func TestAdminMatrix(t *testing.T) {
 		return reporter.reportMsg(reportConv, msgIDOf(t, sender.send(reportConv, next("ZXQ-MX"))), "spam", "")
 	}
 	sharedReport := newReport()
+	imageFile := rw.upload(rw.userToken(rs), "image", "matrix.png", pngBytes(8, 8), "image/png", pngBytes(4, 4))
+	imageMsg := msgIDOf(t, sender.sendAttachment(reportConv, "image", map[string]any{"image": map[string]any{"fileId": imageFile}}))
+	imageReport := reporter.reportMsg(reportConv, imageMsg, "porn", "")
 	newWord := func() string {
 		r := roles["operator"].do("POST", "/console/api/moderation/words", map[string]any{"word": next("ZXQWORD")})
 		return fmt.Sprint(fnum(asMap(t, "word", r.body["word"])["wordId"]))
@@ -1259,6 +1262,20 @@ func TestAdminMatrix(t *testing.T) {
 		"POST /console/api/reports/{id}/resolve": func(c *user) reply {
 			return c.do("POST", "/console/api/reports/"+newReport()+"/resolve", map[string]any{"result": "handled", "reason": "matrix test"})
 		},
+		"POST /console/api/reports/{id}/evidence-grant": func(c *user) reply {
+			b.tick()
+			return c.do("POST", "/console/api/reports/"+sharedReport+"/evidence-grant", map[string]any{"reason": "matrix test", "otp": c.otp()})
+		},
+		"POST /console/api/reports/{id}/evidence": func(c *user) reply {
+			b.tick()
+			c.do("POST", "/console/api/reports/"+sharedReport+"/evidence-grant", map[string]any{"reason": "matrix test", "otp": c.otp()})
+			return c.do("POST", "/console/api/reports/"+sharedReport+"/evidence", map[string]any{})
+		},
+		"POST /console/api/reports/{id}/files/{fileId}/fetch": func(c *user) reply {
+			b.tick()
+			c.do("POST", "/console/api/reports/"+imageReport+"/evidence-grant", map[string]any{"reason": "matrix test", "otp": c.otp()})
+			return c.do("POST", "/console/api/reports/"+imageReport+"/files/"+imageFile+"/fetch", map[string]any{"msgId": imageMsg})
+		},
 		"GET /console/api/push/templates": func(c *user) reply { return c.do("GET", "/console/api/push/templates", nil) },
 		"POST /console/api/push/targets/validate": func(c *user) reply {
 			return c.upload("/console/api/push/targets/validate", "userId\n"+u+"\n", nil)
@@ -1385,6 +1402,7 @@ var permMatrix = map[string]map[string]bool{
 	"moderation.words": {"operator": true, "moderator": true},
 	"report.read":      {"moderator": true},
 	"report.handle":    {"moderator": true},
+	"report.evidence":  {"moderator": true},
 }
 
 // AC-ADM-15-7：im-server 没有注册这个接口。

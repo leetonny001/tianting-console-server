@@ -38,7 +38,7 @@ var Admin = Space{
 		"support":     {"user.read", "user.kick", "user.sessions", "social.read", "group.read", "msg.meta", "mute.write"},
 		// C6（PRD-chat 第 14.1 节，PRD-admin v1.5 5.2 节）：词库运营、审核都有；举报的三个只给审核，超管默认没有（应急授权照旧）。
 		"moderator": {"user.read", "user.kick", "user.sessions", "social.read", "group.read", "group.dissolve", "msg.meta", "mute.write", "user.ban", "msg.delete", "msg.read.group", "msg.read.c2c", "msg.quarantine.read",
-			"moderation.words", "report.read", "report.handle"},
+			"moderation.words", "report.read", "report.handle", "report.evidence"},
 		"auditor": {"audit.read", "push.records.read"},
 	},
 }

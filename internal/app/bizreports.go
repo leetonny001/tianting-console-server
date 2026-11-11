@@ -1,10 +1,16 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
+
+	"github.com/jackc/pgx/v5"
 
 	"tianting/console/internal/apierr"
 	"tianting/console/internal/audit"
+	"tianting/console/internal/imclient"
 )
 
 // CS-207（举报队列、详情、结案）、CS-208（证据授权、读取、文件代理）：PRD-chat F-MOD-04、第 11.6、14.1 节，PRD-admin 5.2、5.3 节；
@@ -182,5 +188,252 @@ func (c *rc) resolveReport() {
 	c.ticket = req.Ticket
 	c.audited(actionReportHandle, audit.NewTarget("report", id), map[string]any{"result": req.Result}, reason, func() (any, error) {
 		return struct{}{}, c.im(http.MethodPost, path+"/resolve", nil, map[string]any{"result": req.Result, "reason": reason}, nil)
+	})
+}
+
+// createEvidenceGrant：权限 → 理由（4000）→ 动态码缺失（4038）/ 错误（4015）→ intent → im-server（配额和正文授权合并，在那边）→ 绑定当前浏览器会话。
+// 流程同 F-ADM-08：动态码每次都要，step-up 窗口不算数；工单号自动用举报 ID（PRD-admin 5.3 节）。
+// 单聊消息举报、用户举报在 IM_C2C_BODY_ACCESS=off 时 im-server 403 / 4030 c2cBodyDisabled，原样返回（AC-MOD-04-3）。
+func (c *rc) createEvidenceGrant() {
+	id, _, ok := c.reportPath()
+	if !ok {
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+		OTP    string `json:"otp"`
+	}
+	if !c.readJSON(&req) {
+		return
+	}
+	reason, e := CheckReason(req.Reason)
+	if e != nil {
+		c.fail(e)
+		return
+	}
+	if req.OTP == "" {
+		c.fail(apierr.New(apierr.StepUpRequired, "enter your one-time code"))
+		return
+	}
+	good, err := c.a.checkOTP(c.ctx, c.acct.ID, req.OTP)
+	if err != nil {
+		c.failErr("check otp", err)
+		return
+	}
+	if !good {
+		c.stepUpFailed()
+		return
+	}
+	c.ticket = id
+	c.audited(actionEvidenceGrant, audit.NewTarget("report", id), nil, reason, func() (any, error) {
+		var g struct {
+			GrantID   string `json:"grantId"`
+			ExpiresAt int64  `json:"expiresAt"`
+		}
+		if err := c.msgRead("/admin/report-grants", map[string]any{"reportId": id, "reason": reason}, &g); err != nil {
+			return nil, err
+		}
+		if _, err := c.a.DB.Exec(context.WithoutCancel(c.ctx), `INSERT INTO biz.report_grants (session_hash, report_id, grant_id, expires_at) VALUES ($1, $2, $3, $4)
+			ON CONFLICT (session_hash, report_id) DO UPDATE SET grant_id = EXCLUDED.grant_id, expires_at = EXCLUDED.expires_at, conv_id = ''`,
+			c.sessionKey(), id, g.GrantID, g.ExpiresAt); err != nil {
+			return nil, err
+		}
+		prefix := grantPrefix(g.GrantID)
+		c.resultParams = map[string]any{"grant": prefix}
+		// 浏览器只拿到前 8 位（水印用），完整的 grantId 只在服务端。
+		return map[string]any{"grantPrefix": prefix, "expiresAt": g.ExpiresAt}, nil
+	})
+}
+
+// reportGrant 是这个浏览器会话对这条举报的证据授权。没有或已过期（按 console 的钟）时写好 403 / 4039，返回 false。
+func (c *rc) reportGrant(id string) (grantID, convID string, expiresAt int64, ok bool) {
+	err := c.a.DB.QueryRow(c.ctx, `SELECT grant_id, expires_at, conv_id FROM biz.report_grants WHERE session_hash = $1 AND report_id = $2`, c.sessionKey(), id).Scan(&grantID, &expiresAt, &convID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.fail(apierr.New(apierr.MsgReadGrantNeeded, "no valid evidence grant for this report"))
+		return "", "", 0, false
+	}
+	if err != nil {
+		c.failErr("load report grant", err)
+		return "", "", 0, false
+	}
+	if expiresAt <= c.now() {
+		c.dropReportGrant(id)
+		c.fail(apierr.New(apierr.MsgReadGrantNeeded, "the evidence grant has expired"))
+		return "", "", 0, false
+	}
+	return grantID, convID, expiresAt, true
+}
+
+func (c *rc) dropReportGrant(id string) {
+	if _, err := c.a.DB.Exec(context.WithoutCancel(c.ctx), `DELETE FROM biz.report_grants WHERE session_hash = $1 AND report_id = $2`, c.sessionKey(), id); err != nil {
+		c.a.Log.Error("drop report grant", "err", err)
+	}
+}
+
+// dropOnGrantGone：im-server 说授权没了（过期、换了操作人）就解除绑定，页面重新申请。
+func (c *rc) dropOnGrantGone(id string, err error) {
+	var e *apierr.Error
+	if errors.As(err, &e) && e.Code == apierr.MsgReadGrantNeeded {
+		c.dropReportGrant(id)
+	}
+}
+
+// evidenceImage、evidenceFile、evidenceQuote、evidenceMentions、evidenceBody 是证据里一条消息的内容（同 WS 的 MsgBody）：
+// 页面显示正文、引用、@、图片（fileId 用来经 console 取缩略图和原图）、文件名和大小（F-MOD-04 规则 3，backend-chat 第 134 条）。
+type evidenceImage struct {
+	FileID  string `json:"fileId"`
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
+	Size    int64  `json:"size"`
+	Mime    string `json:"mime"`
+	Expired bool   `json:"expired,omitempty"`
+}
+
+type evidenceFile struct {
+	FileID  string `json:"fileId"`
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	Mime    string `json:"mime"`
+	Expired bool   `json:"expired,omitempty"`
+}
+
+type evidenceQuote struct {
+	MsgID string `json:"msgId"`
+	Seq   int64  `json:"seq,omitempty"`
+	From  string `json:"from,omitempty"`
+	Type  string `json:"type,omitempty"`
+	State string `json:"state,omitempty"`
+	Text  string `json:"text,omitempty"`
+}
+
+type evidenceMentions struct {
+	UserIDs []string `json:"userIds"`
+	All     bool     `json:"all,omitempty"`
+}
+
+type evidenceBody struct {
+	Text     string            `json:"text,omitempty"`
+	Data     json.RawMessage   `json:"data,omitempty"`
+	Image    *evidenceImage    `json:"image,omitempty"`
+	File     *evidenceFile     `json:"file,omitempty"`
+	Quote    *evidenceQuote    `json:"quote,omitempty"`
+	Mentions *evidenceMentions `json:"mentions,omitempty"`
+}
+
+// evidenceMessage 是证据里的一条被举报的消息（只有被举报的，不带上下文，F-MOD-04 规则 2）。只存了元数据的没有 body。
+type evidenceMessage struct {
+	MsgID      string        `json:"msgId"`
+	Seq        int64         `json:"seq"`
+	From       string        `json:"from"`
+	Type       string        `json:"type"`
+	TS         int64         `json:"ts"`
+	Body       *evidenceBody `json:"body,omitempty"`
+	Recalled   bool          `json:"recalled,omitempty"`
+	RecalledAt int64         `json:"recalledAt,omitempty"`
+	RecalledBy string        `json:"recalledBy,omitempty"`
+}
+
+// readEvidence：没有这个浏览器会话对这条举报的有效授权 403 / 4039，不调用 im-server。返回正文、隔离原文（AC-MOD-03-5、03-11）、
+// note、文件名；密钥不匹配时 undecryptable 原样给页面（"证据无法解密"，AC-MOD-04-14 前半）。响应带水印用的授权前 8 位。
+// 审计 report.evidence.view：授权前 8 位、条数，不记内容。
+func (c *rc) readEvidence() {
+	c.w.Header().Set("Cache-Control", "no-store")
+	id, path, ok := c.reportPath()
+	if !ok {
+		return
+	}
+	grantID, _, expiresAt, ok := c.reportGrant(id)
+	if !ok {
+		return
+	}
+	prefix := grantPrefix(grantID)
+	c.audited(actionEvidenceView, audit.NewTarget("report", id), map[string]any{"grant": prefix}, "", func() (any, error) {
+		var out struct {
+			Messages      []evidenceMessage `json:"messages"`
+			Note          *string           `json:"note,omitempty"`
+			Undecryptable bool              `json:"undecryptable,omitempty"`
+		}
+		if err := c.msgRead(path+"/evidence", map[string]any{"grantId": grantID}, &out); err != nil {
+			c.dropOnGrantGone(id, err)
+			return nil, err
+		}
+		if out.Messages == nil {
+			out.Messages = []evidenceMessage{}
+		}
+		c.resultParams = map[string]any{"count": len(out.Messages), "grant": prefix}
+		if out.Undecryptable {
+			c.resultParams["undecryptable"] = true
+		}
+		resp := map[string]any{"messages": out.Messages, "grantPrefix": prefix, "expiresAt": expiresAt}
+		if out.Note != nil {
+			resp["note"] = *out.Note
+		}
+		if out.Undecryptable {
+			resp["undecryptable"] = true
+		}
+		return resp, nil
+	})
+}
+
+// fetchEvidenceFile：经 console 取被举报的图片、文件（缩略图和原图都可以，R-CS-12；AC-MOD-04-12、04-13、04-16）。
+// 不复用 /console/api/files/{fileId}/fetch（那是隔离授权，console-chat 第 26 条）：这里用这个浏览器会话绑定的举报授权的 grantId。
+// im-server 要 convId：第一次取文件时用主凭证查一次举报单（requestId 带 .conv 后缀，对账不会把它当成这次取文件），记在绑定上。
+// 响应头：图片校验类型后 inline，其他只有 attachment（auditedStream，console-chat 第 25 条）；后台 CSP 不变。
+func (c *rc) fetchEvidenceFile() {
+	c.w.Header().Set("Cache-Control", "no-store")
+	id, path, ok := c.reportPath()
+	if !ok {
+		return
+	}
+	fileID := c.r.PathValue("fileId")
+	var req struct {
+		MsgID   string `json:"msgId"`
+		Variant string `json:"variant"`
+	}
+	if !c.readJSON(&req) {
+		return
+	}
+	if !validID(fileID) || !validID(req.MsgID) {
+		c.fail(apierr.New(apierr.BadRequest, "invalid fileId or msgId"))
+		return
+	}
+	variant := req.Variant
+	if variant == "" {
+		variant = "original"
+	}
+	if variant != "original" && variant != "thumb" {
+		c.fail(apierr.New(apierr.BadRequest, "variant must be original or thumb"))
+		return
+	}
+	grantID, convID, _, ok := c.reportGrant(id)
+	if !ok {
+		return
+	}
+	params := map[string]any{"fileId": fileID, "msgId": req.MsgID, "variant": variant, "grant": grantPrefix(grantID)}
+	c.auditedStream(actionReportFileFetch, audit.NewTarget("report", id), params, true, func() (*http.Response, error) {
+		if convID == "" {
+			var d struct {
+				ConvID string `json:"convId"`
+			}
+			if err := c.imDo(c.requestID+".conv", http.MethodGet, path, nil, nil, &d); err != nil {
+				return nil, err
+			}
+			if d.ConvID == "" { // 用户举报、群举报：证据里没有消息，也就没有文件
+				return nil, apierr.New(apierr.NotFound, "no message evidence in this report")
+			}
+			convID = d.ConvID
+			if _, err := c.a.DB.Exec(context.WithoutCancel(c.ctx), `UPDATE biz.report_grants SET conv_id = $3 WHERE session_hash = $1 AND report_id = $2 AND grant_id = $4`,
+				c.sessionKey(), id, convID, grantID); err != nil {
+				return nil, err
+			}
+		}
+		if c.a.MsgRead == nil {
+			return nil, apierr.New(apierr.Unavailable, "message body access is not configured")
+		}
+		resp, err := c.a.MsgRead.Stream(c.ctx, imclient.Call{Operator: c.operator(), RequestID: c.requestID}, http.MethodPost, "/admin/files/"+pathID(fileID)+"/fetch", nil,
+			map[string]any{"grantId": grantID, "convId": convID, "msgId": req.MsgID, "variant": variant})
+		// 这里的 4039 也可能是"这条举报的证据没有引用这个文件"（backend-chat 第 109 条），不解除绑定：
+		// 授权真的没了时读证据会拿到 4039 并解除，console 自己的到期判断也会解除。
+		return resp, err
 	})
 }

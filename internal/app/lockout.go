@@ -184,6 +184,7 @@ func (a *App) Housekeeping(ctx context.Context) error {
 		{`DELETE FROM biz.meta_sessions WHERE until < $1`, now},
 		{`DELETE FROM biz.user_convs_windows WHERE until < $1`, now},
 		{`DELETE FROM biz.msg_grants WHERE expires_at < $1`, now},
+		{`DELETE FROM biz.report_grants WHERE expires_at < $1`, now},
 		{`DELETE FROM biz.grafana_tickets WHERE expires_at < $1`, now},
 		{`DELETE FROM biz.grafana_sessions WHERE created_at < $1`, now - 2*absoluteTimeout.Milliseconds()},
 		// 发送记录和审计同样保留：在线 1 年 + 归档年限（F-ADM-50 规则 7）。

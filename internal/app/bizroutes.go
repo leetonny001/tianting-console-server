@@ -62,6 +62,9 @@ func businessRoutes() []route {
 		{method: "GET", path: "/console/api/reports", perm: "report.read", h: (*rc).listReports},
 		{method: "POST", path: "/console/api/reports/{id}/view", perm: "report.read", sensitive: true, action: actionReportView, h: (*rc).viewReport},
 		{method: "POST", path: "/console/api/reports/{id}/resolve", perm: "report.handle", action: actionReportHandle, h: (*rc).resolveReport},
+		{method: "POST", path: "/console/api/reports/{id}/evidence-grant", perm: "report.evidence", sensitive: true, action: actionEvidenceGrant, h: (*rc).createEvidenceGrant},
+		{method: "POST", path: "/console/api/reports/{id}/evidence", perm: "report.evidence", sensitive: true, action: actionEvidenceView, h: (*rc).readEvidence},
+		{method: "POST", path: "/console/api/reports/{id}/files/{fileId}/fetch", perm: "report.evidence", sensitive: true, action: actionReportFileFetch, h: (*rc).fetchEvidenceFile},
 		// 系统通知（CS-044、CS-045）
 		{method: "GET", path: "/console/api/push/templates", perm: "push.user", h: (*rc).listPushTemplates},
 		{method: "POST", path: "/console/api/push/targets/validate", perm: "push.user", h: (*rc).validatePushTargets},

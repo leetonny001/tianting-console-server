@@ -55,6 +55,14 @@ go test -race ./...
 - `GET /console/api/users/{id}` 带 `account {hasAccount, createdAt?, lastLoginAt?, sessions}`，只有这 4 个字段。账号信息取不到时 `account: null`、`accountUnavailable: true`，不能当成"没有账号"。
 - 第一批没有改用户密码或恢复码的接口（AC-ACC-05-9）。`/console/api/me/password`、`/me/recovery-codes`、`/accounts/{id}/reset` 只改后台账号自己的凭证。
 
+## 词库和举报（PRD-chat F-MOD-01～04，C6）
+
+- im-server 调用方：`console` 要加 scope `moderation.words`、`report.read`、`report.handle`；`console-msgread` 要加 `report.evidence`（正文类，只能在它上面）。**已部署环境要手动加**，缺了是 403 / 4030。
+- 词库：`GET /console/api/moderation/words?q=&state=&cursor=&limit=`、`POST /console/api/moderation/words {word}`、`POST .../import {words}`（≤ 5000 条，超出 400 / 4131）、`PATCH .../{id} {state}`、`DELETE .../{id}`，权限 `moderation.words`（运营、审核）。审计（`moderation.word.add`、`.update`、`.delete`、`.import`）只记 `wordId` 和数量，不记词。
+- 命中次数：`GET /console/api/moderation/hits?userId=`，权限 `report.read`（只有审核），写 `moderation.hits.view`。
+- 举报：`GET /console/api/reports?state=&reason=&targetType=&from=&to=&cursor=&limit=`（不写审计）；`POST /console/api/reports/{id}/view {reason?, ticket?}`（每次打开写 `report.view`；单聊消息举报必填理由，每天 50 个单聊会话，和单聊元数据查询合并，超出 429 / 4292）；`POST .../{id}/resolve {result, reason}`（`report.handle`）。权限 `report.read`、`report.handle`，只有审核。响应里没有 `note`、正文和文件名。
+- 证据：`POST .../{id}/evidence-grant {reason, otp}`（每次都要动态码，工单号用举报 ID，授权绑定这个浏览器会话）、`POST .../{id}/evidence`、`POST .../{id}/files/{fileId}/fetch {msgId, variant?}`，权限 `report.evidence`（审核，超管只有应急授权时有），只经 `console-msgread`。图片校验类型和文件头后 `inline`，其他只有 `attachment`；后台 CSP 不变（`img-src 'self' data:`，页面要用 `data:` 显示，不能用 `blob:`）。
+
 ## 运维模块
 
 接口清单是 `api/ops-routes.yaml`，启动时和注册的路由比对，不一致就启动失败；权限矩阵测试用它做数据源。节点凭证、Prometheus、Alertmanager、备份桶、Grafana 的配置见 `deploy/console-server.env.example`。

@@ -1,12 +1,15 @@
 package app
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -72,7 +75,7 @@ func (c *rc) fetchFile() {
 		return
 	}
 	params := map[string]any{"fileId": fileID, "msgId": req.MsgID, "variant": variant, "grant": grantPrefix(grantID)}
-	c.auditedStream(actionFileFetch, audit.NewTarget("conv", req.ConvID), params, func() (*http.Response, error) {
+	c.auditedStream(actionFileFetch, audit.NewTarget("conv", req.ConvID), params, false, func() (*http.Response, error) {
 		if c.a.MsgRead == nil {
 			return nil, apierr.New(apierr.Unavailable, "message body access is not configured")
 		}
@@ -102,10 +105,27 @@ func fileContentType(v string) string {
 	return mt
 }
 
+// inlineImageTypes 是举报证据里可以内联显示的图片类型（F-MOD-04 规则 3，console-chat 第 25 条）和它们的文件头。
+// 不含 SVG（可以带脚本）。im-server 记录的类型在这里、文件头也对得上才内联，Content-Type 固定成这个值。
+var inlineImageTypes = map[string]func([]byte) bool{
+	"image/jpeg": func(b []byte) bool { return bytes.HasPrefix(b, []byte{0xFF, 0xD8, 0xFF}) },
+	"image/png":  func(b []byte) bool { return bytes.HasPrefix(b, []byte("\x89PNG\r\n\x1a\n")) },
+	"image/gif": func(b []byte) bool {
+		return bytes.HasPrefix(b, []byte("GIF87a")) || bytes.HasPrefix(b, []byte("GIF89a"))
+	},
+	"image/webp": func(b []byte) bool { return len(b) >= 12 && string(b[:4]) == "RIFF" && string(b[8:12]) == "WEBP" },
+}
+
+// sniffLen 是判断文件头要读的字节数（WebP 要 12 个）。
+const sniffLen = 12
+
 // auditedStream 是流式响应的两阶段审计：intent 写失败不调用 im-server（503 / 5031）；
 // im-server 拒绝时和 audited 相同；成功时先写响应头、再边读边写，读完写 result（字节数）。
 // 传到一半断了（im-server 或浏览器）result 记 failure，params.incomplete=true；状态码已经发出去，改不了。
-func (c *rc) auditedStream(action string, target audit.Target, params map[string]any, fn func() (*http.Response, error)) {
+// inlineImages=false（隔离路径，CS-202）：一律 attachment。true（举报证据，CS-208）：im-server 记录的类型在白名单里、
+// 文件头也对得上的图片 inline（页面同源显示）；声称是图片但对不上的按 application/octet-stream 附件；其他类型 attachment。
+// 两种都带 nosniff、no-store，不带文件名，后台 CSP 不变。
+func (c *rc) auditedStream(action string, target audit.Target, params map[string]any, inlineImages bool, fn func() (*http.Response, error)) {
 	r := c.base(audit.PhaseIntent, action)
 	r.Target, r.Params = target, params
 	if err := c.a.Audit.Write(c.ctx, r); err != nil {
@@ -139,16 +159,32 @@ func (c *rc) auditedStream(action string, target audit.Target, params map[string
 	}
 	defer resp.Body.Close()
 	h := c.w.Header()
-	h.Set("Content-Type", fileContentType(resp.Header.Get("Content-Type")))
-	h.Set("Content-Disposition", "attachment") // 固定附件、不带文件名：文件名按正文对待（R-CS-14），页面从正文接口拿
+	contentType, disposition := fileContentType(resp.Header.Get("Content-Type")), "attachment"
+	var src io.Reader = resp.Body
+	inline := false
+	if inlineImages {
+		br := bufio.NewReaderSize(resp.Body, 512)
+		head, _ := br.Peek(sniffLen) // 文件不到 12 个字节时 head 更短，校验不过
+		src = br
+		if check, ok := inlineImageTypes[contentType]; ok && check(head) {
+			disposition, inline = "inline", true
+		} else if strings.HasPrefix(contentType, "image/") {
+			contentType = "application/octet-stream"
+		}
+	}
+	h.Set("Content-Type", contentType)
+	h.Set("Content-Disposition", disposition) // 不带文件名：文件名按正文对待（R-CS-14），页面从正文、证据接口拿
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "no-store")
 	if n := resp.ContentLength; n >= 0 {
 		h.Set("Content-Length", strconv.FormatInt(n, 10))
 	}
 	c.w.WriteHeader(http.StatusOK)
-	n, cerr := io.Copy(c.w, resp.Body)
+	n, cerr := io.Copy(c.w, src)
 	res.Params = map[string]any{"bytes": n}
+	if inlineImages {
+		res.Params["inline"] = inline
+	}
 	if cerr != nil || (resp.ContentLength >= 0 && n != resp.ContentLength) {
 		res.Result, res.Code = audit.Failure, apierr.Internal
 		res.Params["incomplete"] = true
