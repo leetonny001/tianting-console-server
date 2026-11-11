@@ -1099,6 +1099,16 @@ func TestAdminMatrix(t *testing.T) {
 		}
 		return g
 	}
+	// C6 样本：rs 在群里发消息，rr 举报。看举报单共用一条；结案每次一条新的（只能结一次）。
+	// 用单独的两个用户：别的样本会把 u 下线、把 u+"b" 封禁。
+	rs, rr := u+"rs", u+"rr"
+	b.users(rs, rr)
+	reportConv := "group:" + rw.group(rs, rr)
+	sender, reporter := b.dial(rs, "web"), b.dial(rr, "web")
+	newReport := func() string {
+		return reporter.reportMsg(reportConv, msgIDOf(t, sender.send(reportConv, next("ZXQ-MX"))), "spam", "")
+	}
+	sharedReport := newReport()
 	newWord := func() string {
 		r := roles["operator"].do("POST", "/console/api/moderation/words", map[string]any{"word": next("ZXQWORD")})
 		return fmt.Sprint(fnum(asMap(t, "word", r.body["word"])["wordId"]))
@@ -1242,7 +1252,14 @@ func TestAdminMatrix(t *testing.T) {
 			return c.do("DELETE", "/console/api/moderation/words/"+newWord(), nil)
 		},
 		"GET /console/api/moderation/hits": func(c *user) reply { return c.do("GET", "/console/api/moderation/hits?userId="+u, nil) },
-		"GET /console/api/push/templates":  func(c *user) reply { return c.do("GET", "/console/api/push/templates", nil) },
+		"GET /console/api/reports":         func(c *user) reply { return c.do("GET", "/console/api/reports", nil) },
+		"POST /console/api/reports/{id}/view": func(c *user) reply {
+			return c.do("POST", "/console/api/reports/"+sharedReport+"/view", map[string]any{})
+		},
+		"POST /console/api/reports/{id}/resolve": func(c *user) reply {
+			return c.do("POST", "/console/api/reports/"+newReport()+"/resolve", map[string]any{"result": "handled", "reason": "matrix test"})
+		},
+		"GET /console/api/push/templates": func(c *user) reply { return c.do("GET", "/console/api/push/templates", nil) },
 		"POST /console/api/push/targets/validate": func(c *user) reply {
 			return c.upload("/console/api/push/targets/validate", "userId\n"+u+"\n", nil)
 		},
@@ -1367,6 +1384,7 @@ var permMatrix = map[string]map[string]bool{
 	// C6（PRD-admin v1.5 5.2 节，PRD-chat 第 14.1 节）
 	"moderation.words": {"operator": true, "moderator": true},
 	"report.read":      {"moderator": true},
+	"report.handle":    {"moderator": true},
 }
 
 // AC-ADM-15-7：im-server 没有注册这个接口。

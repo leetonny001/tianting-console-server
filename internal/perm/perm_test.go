@@ -39,6 +39,7 @@ func TestAdminMatrix(t *testing.T) {
 		// C6（PRD-admin v1.5 5.2 节）
 		"moderation.words": {"operator", "moderator"},
 		"report.read":      {"moderator"},
+		"report.handle":    {"moderator"},
 	} {
 		var got []string
 		for r := range Admin.Roles {

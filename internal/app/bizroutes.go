@@ -58,6 +58,10 @@ func businessRoutes() []route {
 		{method: "PATCH", path: "/console/api/moderation/words/{id}", perm: "moderation.words", action: actionWordUpdate, h: (*rc).patchWord},
 		{method: "DELETE", path: "/console/api/moderation/words/{id}", perm: "moderation.words", action: actionWordDelete, h: (*rc).deleteWord},
 		{method: "GET", path: "/console/api/moderation/hits", perm: "report.read", action: actionHitsView, h: (*rc).getHits},
+		// 举报（CS-207、CS-208，PRD-chat F-MOD-04）。打开举报单是 POST：单聊举报的理由放请求体，不进 URL。
+		{method: "GET", path: "/console/api/reports", perm: "report.read", h: (*rc).listReports},
+		{method: "POST", path: "/console/api/reports/{id}/view", perm: "report.read", sensitive: true, action: actionReportView, h: (*rc).viewReport},
+		{method: "POST", path: "/console/api/reports/{id}/resolve", perm: "report.handle", action: actionReportHandle, h: (*rc).resolveReport},
 		// 系统通知（CS-044、CS-045）
 		{method: "GET", path: "/console/api/push/templates", perm: "push.user", h: (*rc).listPushTemplates},
 		{method: "POST", path: "/console/api/push/targets/validate", perm: "push.user", h: (*rc).validatePushTargets},

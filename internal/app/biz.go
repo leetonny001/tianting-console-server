@@ -59,6 +59,15 @@ func (c *rc) reasonTicket(rawReason, ticket string) (string, bool) {
 
 // dailyQuota 是每日上限（Asia/Shanghai）：按不同对象计数，已查过的不重复计数。超出 429 / 4292。
 func (c *rc) dailyQuota(kind, key string, limit int) bool {
+	if err := c.takeQuota(kind, key, limit); err != nil {
+		c.failErr("daily quota", err)
+		return false
+	}
+	return true
+}
+
+// takeQuota 是 dailyQuota 的判断部分：超出返回 4292，不写响应（举报详情在拿到会话类型之后才知道要不要计数，CS-207）。
+func (c *rc) takeQuota(kind, key string, limit int) error {
 	day := c.a.Clock.Now().In(shanghai).Format("2006-01-02")
 	exceeded := false
 	err := pgx.BeginFunc(c.ctx, c.a.DB, func(tx pgx.Tx) error {
@@ -81,14 +90,12 @@ func (c *rc) dailyQuota(kind, key string, limit int) bool {
 		return err
 	})
 	if err != nil {
-		c.failErr("daily quota", err)
-		return false
+		return err
 	}
 	if exceeded {
-		c.fail(apierr.New(apierr.QuotaExceeded, "daily limit reached"))
-		return false
+		return apierr.New(apierr.QuotaExceeded, "daily limit reached")
 	}
-	return true
+	return nil
 }
 
 // minuteRate 是每账号每分钟的限流。超出 429 / 4290。
